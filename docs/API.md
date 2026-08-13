@@ -22,7 +22,14 @@ settings. Hexometer's key is **per-property**.
 ## Hexowatch — `https://api.hexowatch.com/v2/app/services`
 
 Six endpoints. There is no seventh: **no update endpoint and no delete
-endpoint** exist. The dashboard can edit monitors; the API cannot.
+endpoint** exist here. Measured 2026-08-13, not inferred from the docs —
+`DELETE` in five path shapes and `PUT`/`PATCH` in three all return the
+backend's Express 404 (`Cannot DELETE /api/app/services/v2/monitor`), against
+controls that behaved correctly.
+
+Both operations do exist on the **GraphQL gateway** — see that section below.
+"Absent from REST" and "impossible" are different claims, and only the first
+one is true.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -140,6 +147,66 @@ tool names and the scan-result tool names — `sectionScreenToolData` ↔ visual
 `pingToolData` ↔ availability, `httpRequestToolData` ↔ API monitor. The mapping
 is not documented, and there is no `tool` discriminator: infer the monitor type
 from which `*ToolData` key is populated.
+
+## The GraphQL gateway — `https://api.hexowatch.com/v2/ql`
+
+Undocumented by the vendor. Recovered from the dashboard bundle and verified
+against the live server on 2026-08-13. `v2/app` (REST) and `v2/ql` (GraphQL) are
+two prefixes on **one gateway**.
+
+This is where delete and update live. Confirmed present by omitting required
+arguments, so GraphQL validation rejects the call before any resolver runs,
+against a control field that correctly read absent:
+
+| Operation | Signature |
+| --- | --- |
+| `WatchOps.deleteWatchProperty` | `(watch_property_id: Int!)` |
+| `WatchOps.deleteWatchProperties` | `(watch_properties_ids: [Int]!)` |
+| `WatchOps.updateWatchProperty` | `(watch_property_id, active, monitoring_interval, change_notification_level, pause_after_first_change_event, name, alert_notification_settings, scheduling_settings, tool_settings)` |
+| `WatchOps.updateWatchProperties` | `(watch_properties_ids: [Int]!, active, monitoring_interval, change_notification_level, tags, watch_integration_ids, tool_settings)` |
+
+Reads: `Watch.getWatchProperty(watch_property_id)` returns `id name url active
+change_notification_level createdAt tool tool_settings{…}` — the monitor detail
+REST has no endpoint for. Also `WatchIntegration.getWatchPropertyIntegrations`
+and `Watch.getUserWatchPropertiesStatistics`.
+
+### Authentication is different from REST
+
+`?key=` does **not** work here. Measured five ways — `authorization`, `Bearer`,
+`x-api-key`, `?key=` query parameter, URL parameter — every one returned `null`,
+byte-identical to sending no credential at all.
+
+```
+UserOps.authRefreshToken(email: String!, password: String!) -> { token hash }
+UserOps.authAccessToken(refreshToken: String!)              -> { token }
+```
+
+The access token goes in an `authorization` header. That is strictly safer than
+the REST scheme, which puts a live credential in every URL.
+
+### The trap: null is an auth failure, not empty data
+
+An unauthenticated read returns **HTTP 200** with:
+
+```json
+{"data":{"Watch":{"getUserWatchPropertiesStatistics":{"properties_status":null}}}}
+```
+
+No token, a bogus token, and a valid REST API key all produce exactly this.
+Nothing in the response distinguishes them from an account that genuinely has no
+monitors, so a client that renders `null` as "empty" tells a user with an expired
+token that their account is fine and empty. Fail closed: the gateway returns
+`[]` for genuinely empty collections, so nothing legitimate is lost.
+
+`WatchOps.updateWatchProperty` with no arguments is the honest probe — it reaches
+its resolver and answers `"You should be authenticated to perform this action!"`.
+
+### Introspection is disabled
+
+`GraphQL introspection is not allowed by Apollo Server` (HTTP 400). But the
+error messages carry "Did you mean" suggestions, which is a usable schema
+oracle. Operation names are unversioned with no compatibility promise, so
+`tests/test_hexact.py` pins them: a silent rename should fail loudly.
 
 ## Hexomatic — `https://api.hexomatic.com/v2/app/services/v1`
 

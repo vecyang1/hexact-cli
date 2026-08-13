@@ -72,6 +72,46 @@ Get the keys from the **API/Webhook** section of each dashboard's settings
 | `create --url U --tool T [--silent]` | Create a monitor |
 | `levels` | Valid `change_notification_level` per tool (offline) |
 | `integrations` | Notification channels and their IDs |
+| `show <id>` | A monitor's real config — tool, level, channels † |
+| `delete <ids…> --yes` | **Permanently delete** monitors † |
+| `retune <ids…> --level GE_5` | Change alert threshold or interval † |
+
+† GraphQL-only. Needs `hexact auth login` — see below.
+
+### Session — `hexact auth`
+
+`login --email you@example.com`, `status`.
+
+The REST API has **no delete and no update**. Not undocumented — absent: `DELETE`
+in five path shapes and `PUT`/`PATCH` in three all return the backend's Express
+404, against controls that behaved. The dashboard's own GraphQL gateway
+(`api.hexowatch.com/v2/ql`) has both, so `show`, `delete` and `retune` go there.
+
+It does not accept the REST API key. Tested five ways (`authorization`,
+`Bearer`, `x-api-key`, `?key=` query, URL param) — all five returned `null`,
+identical to sending no credential. It wants the dashboard's session token:
+
+```bash
+hexact auth login --email you@example.com   # prompts; the password is never stored
+hexact auth status                          # confirms the gateway accepts it
+```
+
+Only the long-lived refresh token is saved, into the same credentials file
+(mode `600`). The password is read with `getpass` — never a flag, since argv is
+visible to every process and lands in shell history — used for one request, and
+never written. Short-lived access tokens are minted per command and held in
+memory only.
+
+**This credential is broader than the API keys.** A REST key reaches six
+documented endpoints; a refresh token reaches the whole account, including
+billing. Two mitigations, both in code rather than convention:
+`graphql.MUTATION_ALLOWLIST` permits exactly four Watch mutations and is checked
+before a request is built, and `graphql.FORBIDDEN_NAMESPACES` makes account and
+billing operations unreachable. `delete` additionally refuses without `--yes`,
+before touching the network.
+
+Every write is confirmed by reading it back. A mutation answering
+`{"error": false}` is a claim, not proof.
 
 ### Hexomatic — `hexact matic`
 
@@ -106,6 +146,22 @@ Two caveats worth knowing before relying on this:
   so `--silent` cannot disable it.
 - Whether the account's default email integration still applies when
   `notification_integrations` is empty is **not documented**.
+
+### Quietening monitors that already exist
+
+`--silent` only applies at creation, and REST cannot edit a monitor afterwards.
+`retune` can:
+
+```bash
+hexact watch retune 285438 --level GE_5   # alert only on larger changes
+```
+
+This is the lever for alert noise dominated by trivial diffs — visual monitors
+routinely fire at 0.06%. **`GE_n`'s exact meaning is undocumented**; the `GE_`
+prefix and the `percentage` field in scan results make "≥ n%" the obvious
+reading, but the vendor never states it. `retune` reads the value back so you
+can see it persisted; whether it actually suppresses smaller changes takes days
+of observation to confirm. Change one monitor first.
 
 ## Choosing a monitor type
 
