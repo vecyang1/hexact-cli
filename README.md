@@ -28,15 +28,29 @@ No official CLI, SDK, or MCP server exists for any of these products.
 ## Install
 
 ```bash
+pipx install git+https://github.com/vecyang1/hexact-cli   # or: uv tool install git+https://github.com/vecyang1/hexact-cli
+hexact doctor
+```
+
+Either tool puts a `hexact` binary on your `PATH` in its own virtualenv. There
+is nothing to resolve — the dependency list is empty — so the install cannot
+conflict with anything already on the machine.
+
+From a clone, `pip install .` gives the same binary:
+
+```bash
 git clone https://github.com/vecyang1/hexact-cli && cd hexact-cli
+pip install .
+```
+
+Or run it out of the clone without installing anything, which works for the
+same reason:
+
+```bash
 python3 -m hexact doctor
 ```
 
-Optionally put it on your `PATH`:
-
-```bash
-printf '#!/bin/sh\nexec python3 -m hexact "$@"\n' > /usr/local/bin/hexact && chmod +x /usr/local/bin/hexact
-```
+Python 3.10+.
 
 ## Credentials
 
@@ -123,12 +137,23 @@ memory only.
 
 **This credential is broader than the API keys.** A REST key reaches six
 documented endpoints; a refresh token reaches the whole account, including
-billing. Two mitigations, both in code rather than convention:
-`graphql.MUTATION_ALLOWLIST` permits exactly ten mutations — Watch, watch
-integrations, and account notification settings — and is checked before a
-request is built, and `graphql.FORBIDDEN_NAMESPACES` makes account and
-billing operations unreachable. `delete` additionally refuses without `--yes`,
-before touching the network.
+billing. Two mitigations, both in code rather than convention.
+
+`graphql.MUTATION_ALLOWLIST` is checked before a request is built, and every
+operation in it belongs to one of five namespaces:
+
+<!-- allowlist-namespaces -->
+`UserWatchSettingsOps`, `WatchAlertOps`, `WatchIntegrationOps`, `WatchOps`,
+`WatchTagOps`
+<!-- /allowlist-namespaces -->
+
+Monitors, their tags, their notification routing, the alert inbox, and the
+account's notification settings. Nothing from Hexomatic, Hexometer or Hexospark
+is writable through this client even though the same token reaches all of them.
+The list above is not maintained by hand — a test regenerates it from the code
+and fails if this paragraph falls behind. `graphql.FORBIDDEN_NAMESPACES` makes
+account and billing operations unreachable, and `delete` refuses without
+`--yes`, before touching the network.
 
 Every write is confirmed by reading it back. A mutation answering
 `{"error": false}` is a claim, not proof.
@@ -280,13 +305,45 @@ The only programmatic path into the Hexospark CRM is a first-party
 
 ## Development
 
+Three checks, and they answer different questions. Running only the first is
+the mistake worth naming.
+
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v   # behaviour, against fakes
+python3 tests/mutation_check.py            # prove those tests can fail
+python3 tools/validate_documents.py        # prove the GraphQL is still real
 ```
 
 Tests are hermetic: every environment variable the package reads is scrubbed at
 import, so a suite run cannot pass because the developer happened to have a real
 key exported.
+
+`mutation_check.py` breaks each guarantee on purpose, in a fresh copy of the
+tree, and fails if any mutation survives — a green suite is not evidence until
+you have watched it go red. It also refuses a mutation whose pattern it could
+not find, so a test that quietly stopped covering moved code is reported rather
+than counted as a pass.
+
+`validate_documents.py` is the one that needs no credential and still tells you
+something a unit test cannot. Every query in this client was recovered from an
+undocumented gateway by reading validator errors, so the risk that outlives any
+mock is Hexact renaming a field. It sends each document with one field that
+cannot exist, which makes validation fail *before* execution — nothing runs, no
+account is touched — while the error list still reports every other problem. If
+the only complaint is the canary, the document is still valid. CI runs it on a
+schedule for exactly that reason.
+
+Code layout: `cli.py` is the parser and the top-level error handler. Command
+bodies live in per-product modules (`cli_watch_rest`, `cli_hexowatch`,
+`cli_hexomatic`, `cli_hexometer`, `cli_hexospark`, `cli_auth`), shared rendering
+helpers in `cli_common`, and a test enforces the project's 800-line-per-file
+ceiling so the split does not quietly undo itself.
+
+`hexact --version` reports the running build; the value has exactly one home,
+`hexact/__init__.py`, and the packaging metadata and User-Agent both derive from
+it. What changed between builds is in
+[CHANGELOG.md](CHANGELOG.md), and a test fails the suite if a release has no
+entry there.
 
 ## License
 

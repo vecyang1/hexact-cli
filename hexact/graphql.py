@@ -209,14 +209,14 @@ def unwrap(data: dict[str, Any], namespace: str, field: str) -> Any:
         raise AuthError(
             f"The GraphQL gateway returned null for {namespace}. This means the "
             "session token was missing, expired or rejected -- it does not mean "
-            "the account is empty. Run: hexact auth login"
+            "the account is empty. Run: hexact auth login --email <you>"
         )
     value = scope.get(field)
     if value is None:
         raise AuthError(
             f"The GraphQL gateway returned null for {namespace}.{field}. This "
             "means the session token was missing, expired or rejected -- it "
-            "does not mean there is no data. Run: hexact auth login"
+            "does not mean there is no data. Run: hexact auth login --email <you>"
         )
     return value
 

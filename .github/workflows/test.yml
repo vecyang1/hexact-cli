@@ -69,3 +69,74 @@ jobs:
             exit 1
           fi
           echo "no committed credentials (pattern verified against a control)"
+
+  # Packaging is the one thing that cannot be verified from inside the repo.
+  # `python3 -m hexact` works from a checkout whether or not the package is
+  # installable, so a broken pyproject.toml is invisible to every contributor
+  # and to the job above -- right up until someone runs `pipx install` and gets
+  # a binary that is missing a module, or no binary at all. The only honest
+  # check is to build the artefact users get and run it from somewhere else.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The floor the README advertises. If the wheel installs here, the
+          # `requires-python` claim is measured rather than asserted.
+          python-version: "3.10"
+
+      - name: Build a wheel and run it from outside the source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade pip
+          python -m pip wheel . --no-deps -w "$RUNNER_TEMP/wheels"
+          # Read the count, not just the exit code. Zero wheels and two wheels
+          # are both wrong, and globbing into a variable would silently pick
+          # whichever sorted first.
+          shopt -s nullglob
+          wheels=("$RUNNER_TEMP"/wheels/*.whl)
+          if [ "${#wheels[@]}" != "1" ]; then
+            echo "::error::expected exactly 1 wheel, found ${#wheels[@]}"; exit 1
+          fi
+          wheel="${wheels[0]}"
+          echo "built $(basename "$wheel")"
+
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "$wheel"
+          bin="$RUNNER_TEMP/venv/bin/hexact"
+          test -x "$bin" || { echo "::error::no console script was installed"; exit 1; }
+
+          # Everything below runs from a directory that is not the checkout, so
+          # an import that only works because `hexact/` happens to be on the
+          # path fails here instead of shipping.
+          cd "$RUNNER_TEMP"
+
+          "$bin" --version
+          "$bin" --help > /dev/null
+          # Offline, credential-free, and it exercises real rendering.
+          "$bin" watch levels > /dev/null
+          "$bin" --json watch levels > /dev/null
+
+          # The failure path must still be a clean exit 1, not a traceback: a
+          # packaging fault often shows up first as an unhandled ImportError
+          # that looks like an application bug.
+          set +e
+          out=$("$bin" watch monitors 2>&1); code=$?
+          set -e
+          if [ "$code" != "1" ]; then
+            echo "::error::no-credential path exited $code, expected 1"
+            echo "$out"; exit 1
+          fi
+          if printf '%s' "$out" | grep -q Traceback; then
+            echo "::error::the installed binary printed a traceback"
+            echo "$out"; exit 1
+          fi
+
+          # `tools/` is reverse-engineering scaffolding that talks to the live
+          # gateway. It must never land on an installing user's sys.path.
+          if "$RUNNER_TEMP/venv/bin/python" -c "import tools" 2>/dev/null; then
+            echo "::error::the wheel shipped the tools/ package"; exit 1
+          fi
+          echo "installed console script works from $(pwd), and tools/ was not shipped"

@@ -24,6 +24,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import mock
 
 _MANAGED_VARS = (
@@ -38,13 +39,17 @@ for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
 
 from hexact import (  # noqa: E402
-    auth, cli, cli_hexomatic, cli_hexowatch, config, graphql, hexomatic, hexometer,
-    hexospark, hexowatch,
+    auth, cli, cli_hexomatic, cli_hexowatch, cli_watch_rest, config, graphql,
+    hexomatic, hexometer, hexospark, hexowatch,
 )
-from hexact.cli import (  # noqa: E402
-    _is_paused, _normalise_address, _parse_timestamp, _rows, _state_label,
-    main, parse_since, resolve_tool_from_payload,
+# Imported from the module that owns each one rather than through `cli`, which
+# only re-exports them for the parser. A test that reaches an implementation
+# through a re-export keeps passing after the implementation moves away from it.
+from hexact.cli import main  # noqa: E402
+from hexact.cli_common import (  # noqa: E402
+    _is_paused, _parse_timestamp, _rows, _state_label, parse_since,
 )
+from hexact.cli_watch_rest import _normalise_address, resolve_tool_from_payload  # noqa: E402
 from hexact.http import HexactAPIError, redact, request  # noqa: E402
 
 
@@ -430,15 +435,15 @@ class TestSameAddressDifferentToolIsNotADuplicate(unittest.TestCase):
             {"id": r["id"], "address": r["address"], "name": r["address"], "paused": False}
             for r in self.LIVE
         ]}
-        with mock.patch.object(cli.hexowatch, "list_monitored_urls", return_value=monitors), \
-             mock.patch.object(cli.hexowatch, "monitoring_logs",
+        with mock.patch.object(hexowatch, "list_monitored_urls", return_value=monitors), \
+             mock.patch.object(hexowatch, "monitoring_logs",
                                side_effect=lambda key, mid, **kw: {
                                    "error": False, "tool": tools[int(mid)],
                                    "monitoring_results": []}), \
-             mock.patch.object(cli, "resolve_key", return_value="k"):
+             mock.patch.object(cli_watch_rest, "resolve_key", return_value="k"):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                cli.cmd_duplicates(argparse.Namespace(json=True))
+                cli_watch_rest.cmd_duplicates(argparse.Namespace(json=True))
         return json.loads(buf.getvalue())
 
     def test_only_the_real_duplicate_is_reported(self):
@@ -460,13 +465,13 @@ class TestSameAddressDifferentToolIsNotADuplicate(unittest.TestCase):
             {"id": 1, "address": "https://a.com", "name": "a", "paused": False},
             {"id": 2, "address": "https://a.com", "name": "a", "paused": False},
         ]}
-        with mock.patch.object(cli.hexowatch, "list_monitored_urls", return_value=monitors), \
-             mock.patch.object(cli.hexowatch, "monitoring_logs",
+        with mock.patch.object(hexowatch, "list_monitored_urls", return_value=monitors), \
+             mock.patch.object(hexowatch, "monitoring_logs",
                                return_value={"error": False, "monitoring_results": []}), \
-             mock.patch.object(cli, "resolve_key", return_value="k"):
+             mock.patch.object(cli_watch_rest, "resolve_key", return_value="k"):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                cli.cmd_duplicates(argparse.Namespace(json=True))
+                cli_watch_rest.cmd_duplicates(argparse.Namespace(json=True))
         data = json.loads(buf.getvalue())
         self.assertEqual(data["redundant_monitors"], 0)
         self.assertEqual(data["compared"], 0)
@@ -1526,3 +1531,331 @@ class TestUserAgentTracksTheVersion(unittest.TestCase):
                 if match.group(1) != __version__:
                     stale.append(f"{path.name}: {match.group(0)}")
         self.assertEqual(stale, [], "a hardcoded agent string drifted from __version__")
+
+
+class TestSessionErrorFitsEveryCommandThatRaisesIt(unittest.TestCase):
+    """One session token serves the whole suite, so the "it is missing" message
+    is shared by every GraphQL command -- and must therefore claim neither a
+    product nor an operation.
+
+    Pins the fix for a measured defect. The message read "No Hexowatch session
+    token found. Delete and update are GraphQL-only and the REST API key does
+    not authenticate there." and was printed verbatim by `matic credits`,
+    `spark contacts` and `meter overview`. The remedy line underneath it was
+    correct throughout, which is what made the wrong diagnosis expensive rather
+    than merely untidy: a reader who does not own Hexowatch, or who ran a
+    read-only command, has every reason to decide the error is about something
+    else and stop before the fix.
+
+    This exercises the real ``main()`` entry point rather than calling
+    ``resolve_key`` directly, because the property under test is "what a user
+    sees", and that is produced by the CLI's exception handler, not by the
+    raise site.
+    """
+
+    # Spans all four wired products on purpose. A fifth product routed to the
+    # same credential belongs in this list, not in an assumption that the
+    # wording still fits it.
+    COMMANDS = (
+        ["watch", "tags", "list"],
+        ["watch", "list"],
+        ["watch", "noise"],
+        ["matic", "credits"],
+        ["meter", "overview"],
+        ["spark", "contacts"],
+    )
+
+    # Wording that is false for at least one command in COMMANDS.
+    FORBIDDEN = ("delete and update", "no hexowatch session")
+
+    def _run(self, argv: list[str]) -> tuple[int, str]:
+        with TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HEXACT_HOME": tmp}, clear=False):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with contextlib.redirect_stderr(err):
+                        code = main(argv)
+        return code, err.getvalue()
+
+    def test_every_graphql_command_reaches_the_same_credential_error(self):
+        """The premise of the test below: they really do share one message."""
+        for argv in self.COMMANDS:
+            with self.subTest(command=" ".join(argv)):
+                code, err = self._run(argv)
+                self.assertEqual(code, 1, err)
+                self.assertIn("session token", err)
+                self.assertIn("hexact auth login", err)
+
+    def test_the_message_asserts_no_single_product_and_no_operation(self):
+        for argv in self.COMMANDS:
+            with self.subTest(command=" ".join(argv)):
+                _, err = self._run(argv)
+                lowered = err.lower()
+                for phrase in self.FORBIDDEN:
+                    self.assertNotIn(
+                        phrase, lowered,
+                        f"`hexact {' '.join(argv)}` is told {phrase!r}, which is "
+                        "not what it was doing",
+                    )
+
+
+class TestNoModuleOutgrowsTheProjectsOwnCeiling(unittest.TestCase):
+    """800 lines is this project's stated file ceiling. It was prose, and
+    `cli.py` reached 1364 lines without anything going red.
+
+    A line count is decidable, the cost of the drift repeated across two
+    rounds, and the failure was silent -- so this is one of the few style
+    rules worth spending a test on. It asserts the size, not the design; a
+    module that stays small for bad reasons still passes, and that is fine.
+    """
+
+    CEILING = 800
+
+    def test_every_module_is_under_the_ceiling(self):
+        root = Path(__file__).resolve().parent.parent
+        oversized = {}
+        for path in sorted(root.glob("hexact/*.py")) + sorted(root.glob("tools/*.py")):
+            count = len(path.read_text(encoding="utf-8").splitlines())
+            if count > self.CEILING:
+                oversized[path.name] = count
+        self.assertEqual(
+            oversized, {},
+            f"over the {self.CEILING}-line ceiling; split by responsibility",
+        )
+
+    def test_the_ceiling_check_can_actually_fail(self):
+        """The measurement itself, run against a file that is definitely over.
+
+        Without this the test above would still pass if `glob` matched nothing
+        -- a green light over an empty denominator.
+        """
+        with TemporaryDirectory() as tmp:
+            fat = Path(tmp) / "fat.py"
+            fat.write_text("x = 1\n" * (self.CEILING + 1), encoding="utf-8")
+            self.assertGreater(
+                len(fat.read_text(encoding="utf-8").splitlines()), self.CEILING
+            )
+        root = Path(__file__).resolve().parent.parent
+        self.assertGreater(len(list(root.glob("hexact/*.py"))), 5,
+                           "the ceiling test is looking at the wrong directory")
+
+
+class TestTheCLICanSayWhichBuildItIs(unittest.TestCase):
+    """`--version` is how a bug report stops starting with a guess."""
+
+    def test_version_flag_prints_the_package_version(self):
+        from hexact import __version__
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as raised:
+                main(["--version"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(__version__, out.getvalue())
+
+    def test_the_packaging_metadata_reads_the_same_version(self):
+        """`pyproject.toml` must derive the version, never restate it.
+
+        Two copies of a version string is how this project's User-Agent came to
+        advertise a release that was never running.
+        """
+        root = Path(__file__).resolve().parent.parent
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('attr = "hexact.__version__"', pyproject)
+        from hexact import __version__
+        self.assertNotIn(f'version = "{__version__}"', pyproject)
+
+
+class TestTheReleaseIsDescribedSomewhere(unittest.TestCase):
+    """A version bump with no changelog entry is invisible to everyone
+    installing from a package index or a git URL.
+
+    Decidable, silent when it goes wrong, and it goes wrong every release --
+    which is the whole case for spending a test on it. It checks that an entry
+    *exists*, not that it is any good; no test can judge that.
+    """
+
+    def test_the_current_version_has_a_changelog_entry(self):
+        from hexact import __version__
+        root = Path(__file__).resolve().parent.parent
+        changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(
+            f"## {__version__}", changelog,
+            f"CHANGELOG.md has no `## {__version__}` heading -- the release "
+            "would ship with nothing said about it",
+        )
+
+    def test_the_check_would_notice_a_missing_entry(self):
+        """Proves the assertion above is not vacuous on any string."""
+        root = Path(__file__).resolve().parent.parent
+        changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertNotIn("## 99.99.99", changelog)
+
+
+class TestTheReadmeDoesNotOutliveTheAllowlist(unittest.TestCase):
+    """The README described the write boundary with a number, and the number
+    was wrong: it said "exactly ten mutations" while the allowlist held 19.
+
+    Nothing went red, because a count in prose is a fact about the past written
+    somewhere that never gets re-read. The fix is not a better number -- it is
+    to derive the claim. This checks the marked block against the code, so the
+    documented boundary and the enforced one cannot disagree.
+    """
+
+    MARKER_OPEN = "<!-- allowlist-namespaces -->"
+    MARKER_CLOSE = "<!-- /allowlist-namespaces -->"
+
+    def _documented(self) -> set[str]:
+        root = Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        self.assertIn(self.MARKER_OPEN, readme, "the marked block was removed")
+        block = readme.split(self.MARKER_OPEN, 1)[1].split(self.MARKER_CLOSE, 1)[0]
+        return set(re.findall(r"`(\w+)`", block))
+
+    def test_the_readme_lists_exactly_the_namespaces_the_allowlist_uses(self):
+        enforced = {op.split(".", 1)[0] for op in graphql.MUTATION_ALLOWLIST}
+        self.assertEqual(
+            self._documented(), enforced,
+            "README.md's allowlist-namespaces block disagrees with "
+            "graphql.MUTATION_ALLOWLIST",
+        )
+
+    def test_the_readme_no_longer_states_a_count_that_can_drift(self):
+        root = Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        self.assertNotRegex(
+            readme, r"permits exactly \w+ mutations",
+            "a hand-maintained count is how this went wrong the first time",
+        )
+
+
+class TestDriftAndSilenceAreDifferentVerdicts(unittest.TestCase):
+    """`tools/validate_documents.py` had one failure bucket: exit 1.
+
+    A renamed field and an unreachable gateway produced the same code, so any
+    caller acting on it either treats an outage as drift -- and hunts a bug
+    that does not exist -- or learns to ignore the signal, which is worse,
+    because the one run that matters looks exactly like the noise. Three
+    states now: 0 verified, 1 a real finding, 2 no verdict.
+
+    The 2 cases are the point of this class. A check that cannot say "I did not
+    manage to check" reports absence of evidence as evidence of absence.
+    """
+
+    CANARY_ERROR = {"message": 'Cannot query field "__zzzCanaryFieldThatCannotExist" on type "Query".'}
+
+    def setUp(self):
+        import importlib.util
+        path = Path(__file__).resolve().parent.parent / "tools" / "validate_documents.py"
+        if not path.is_file():
+            self.skipTest("tools/validate_documents.py not present in this checkout")
+        spec = importlib.util.spec_from_file_location("validate_documents", path)
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+
+    def _main_with(self, fake_post) -> int:
+        with mock.patch.object(self.mod, "post", fake_post):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    return self.mod.main()
+
+    def test_every_document_valid_is_zero(self):
+        self.assertEqual(
+            self._main_with(lambda doc, variables=None: {"data": None,
+                                                         "errors": [self.CANARY_ERROR]}),
+            0,
+        )
+
+    def test_a_renamed_field_is_one(self):
+        payload = {"data": None, "errors": [
+            self.CANARY_ERROR,
+            {"message": 'Cannot query field "totalCount" on type "WatchPropertiesType".'},
+        ]}
+        self.assertEqual(self._main_with(lambda doc, variables=None: payload), 1)
+
+    def test_a_canary_that_stopped_stopping_execution_is_one(self):
+        """Our own defect, not the vendor's: still a hard failure."""
+        payload = {"data": {"Watch": {}}, "errors": [self.CANARY_ERROR]}
+        self.assertEqual(self._main_with(lambda doc, variables=None: payload), 1)
+
+    def test_an_unreachable_gateway_is_two_not_one(self):
+        def unreachable(document, variables=None):
+            raise self.mod.GatewaySilent("could not reach the gateway: [Errno 8]")
+        self.assertEqual(self._main_with(unreachable), 2)
+
+    def test_a_response_with_no_canary_error_is_two_not_one(self):
+        """`Unauthorized`, a proxy envelope, an empty list -- all mean the
+        document never reached a validator, so none of them is drift."""
+        for messages in ([], [{"message": "Unauthorized"}]):
+            with self.subTest(messages=messages):
+                payload = {"data": None, "errors": messages}
+                self.assertEqual(self._main_with(lambda doc, variables=None: payload), 2)
+
+    def test_a_challenge_page_is_silence_rather_than_a_parsed_verdict(self):
+        """HTTP 200 carrying HTML. The old code let the JSONDecodeError escape
+        `main()` entirely, so the process died on a traceback -- which also
+        exits 1, and looks nothing like a schema report."""
+        html = b"<!DOCTYPE html><html><body>Enable JavaScript</body></html>"
+
+        class _Body(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+
+        with mock.patch.object(self.mod.urllib.request, "urlopen",
+                               return_value=_Body(html)):
+            with self.assertRaises(self.mod.GatewaySilent) as raised:
+                self.mod.post("query { x }")
+        self.assertIn("non-JSON", str(raised.exception))
+
+    def test_a_waf_block_is_silence_rather_than_an_empty_error_list(self):
+        """A status code with an unreadable body used to become
+        `{"_http": 403}`, whose empty error list was then reported per document
+        as if each had been examined."""
+        error = urllib.error.HTTPError(
+            "https://example.invalid", 403, "Forbidden", {}, io.BytesIO(b"<html>blocked</html>")
+        )
+        with mock.patch.object(self.mod.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(self.mod.GatewaySilent) as raised:
+                self.mod.post("query { x }")
+        self.assertIn("403", str(raised.exception))
+
+
+class TestEveryRemedyIsACommandThatRuns(unittest.TestCase):
+    """`--email` is required on `auth login`, so a remedy line that omits it
+    hands the user a command that exits 2 before doing anything.
+
+    Five error paths said `Run: hexact auth login` while the CLI's own
+    top-level handler already said `hexact auth login --email <you>`. Nothing
+    could notice, because an error message is the one string no test asserts on
+    unless someone writes this. The predicate is decidable: if a message names
+    the login command, it must name the flag that command requires.
+    """
+
+    def test_login_still_requires_the_flag_this_test_is_about(self):
+        """The premise. If `--email` ever becomes optional, delete this class
+        rather than editing the messages to satisfy it."""
+        login = cli.build_parser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                login.parse_args(["auth", "login"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_no_source_file_suggests_the_command_without_it(self):
+        root = Path(__file__).resolve().parent.parent
+        offenders = []
+        for path in sorted(root.glob("hexact/*.py")):
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                if "hexact auth login" not in line:
+                    continue
+                if "--email" in line:
+                    continue
+                # A prose mention that is not offered as a command to run.
+                if re.search(r"``hexact auth login``|`hexact auth login`(?!\s*--)", line) \
+                        and "Run:" not in line and "Fix:" not in line:
+                    continue
+                offenders.append(f"{path.name}:{number}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "these lines tell the user to run a command that will refuse",
+        )

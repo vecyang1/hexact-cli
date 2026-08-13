@@ -56,7 +56,7 @@ MUTATIONS = [
     ),
     (
         "delete stops requiring --yes",
-        "hexact/cli.py",
+        "hexact/cli_hexowatch.py",
         '    if not args.yes:\n        listed = " ".join(str(i) for i in args.ids)',
         '    if False:\n        listed = " ".join(str(i) for i in args.ids)',
     ),
@@ -83,13 +83,13 @@ MUTATIONS = [
     ),
     (
         "a deleted monitor reading back as all-nulls counts as still present",
-        "hexact/cli.py",
+        "hexact/cli_hexowatch.py",
         '        if not monitor or monitor.get("id") in (None, "", 0):',
         '        if False:',
     ),
     (
         "an API error during delete read-back counts as proof of deletion",
-        "hexact/cli.py",
+        "hexact/cli_hexowatch.py",
         '            unverified.append({"id": target["id"], "reason": str(exc)})\n            continue\n        if not monitor',
         '            confirmed.append(target["id"])\n            continue\n        if not monitor',
     ),
@@ -107,7 +107,7 @@ MUTATIONS = [
     ),
     (
         "duplicates group by address, ignoring the tool",
-        "hexact/cli.py",
+        "hexact/cli_watch_rest.py",
         'groups.setdefault((_normalise_address(str(address)), tool), []).append(monitor)',
         'groups.setdefault((_normalise_address(str(address)), "X"), []).append(monitor)',
     ),
@@ -131,7 +131,7 @@ MUTATIONS = [
     ),
     (
         "login stores a credential without exchanging it first",
-        "hexact/cli.py",
+        "hexact/cli_auth.py",
         '    auth.verify_renewable(refresh)',
         '    pass  # mutation: skip the exchange',
     ),
@@ -170,6 +170,33 @@ MUTATIONS = [
         "hexact/graphql.py",
         '            "searchQuery": search, "sortBy": sort_by, "sortDir": sort_dir,',
         '            "searchQuery": None, "sortBy": sort_by, "sortDir": sort_dir,',
+    ),
+    (
+        "an unreachable gateway is reported as schema drift",
+        "tools/validate_documents.py",
+        '              f"unknown, not as \'no drift\'.", file=sys.stderr)\n        return 2',
+        '              f"unknown, not as \'no drift\'.", file=sys.stderr)\n        return 1',
+    ),
+    (
+        "a non-JSON body is parsed as a verdict instead of raising",
+        "tools/validate_documents.py",
+        '        raise GatewaySilent(f"HTTP {exc.code} with a non-JSON body") from inner',
+        '        return {"_http": exc.code}',
+    ),
+    (
+        # Not a code guarantee -- a documentation one. The README's description
+        # of the write boundary is derived from the allowlist, so drift in
+        # either direction has to be visible.
+        "the README's allowlist namespaces drift from the code",
+        "README.md",
+        "`UserWatchSettingsOps`, `WatchAlertOps`, `WatchIntegrationOps`, `WatchOps`,\n`WatchTagOps`",
+        "`UserWatchSettingsOps`, `WatchAlertOps`, `WatchIntegrationOps`, `WatchOps`",
+    ),
+    (
+        "the shared session error goes back to naming one product and one operation",
+        "hexact/config.py",
+        '            "No Hexact session token found. This command reads the GraphQL "',
+        '            "No Hexowatch session token found. Delete and update are GraphQL-only "',
     ),
 ]
 

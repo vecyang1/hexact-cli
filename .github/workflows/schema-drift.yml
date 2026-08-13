@@ -1,0 +1,332 @@
+name: schema-drift
+
+# Why this workflow exists.
+#
+# The gateway this client talks to (https://api.hexowatch.com/v2/ql) is
+# undocumented, unversioned, and was mapped by inference from the validator's
+# own "Did you mean ...?" errors. So a vendor field rename is not a hypothetical
+# risk here, it is *the* production failure mode -- and it is invisible from
+# inside the repo. The unit tests assert against fakes built from the same
+# inference, so they stay green while every affected command breaks for every
+# user.
+#
+# tools/validate_documents.py is the only instrument that can see it. It posts
+# each document with an impossible field injected at the operation root, so
+# graphql-js rejects the document at *validation* time: no resolver is entered,
+# no credential is needed, no account is touched, and the error list still
+# reports every other problem in the document.
+#
+# Nothing ran it. This is the thing that runs it.
+
+on:
+  # Weekly. Drift arrives when the vendor ships, not by the minute, and every
+  # run is unsolicited traffic against a third party's production API. Off the
+  # hour deliberately: scheduled jobs queue heavily at :00.
+  schedule:
+    - cron: "23 7 * * 1" # Mondays, 07:23 UTC
+  # ...plus on demand, so someone who suspects drift does not have to wait for
+  # Monday or push a commit to ask.
+  workflow_dispatch:
+
+# Deliberately NOT on push or pull_request. This job's verdict depends on a
+# third party being reachable. A vendor outage, a Cloudflare challenge, or a
+# runner without egress would turn an unrelated pull request red for a reason
+# its author did not cause and cannot fix. A gate that fails for reasons outside
+# the contributor's control is not a gate, it is noise that trains people to
+# merge through red -- which would also cost us the one signal this file exists
+# to deliver.
+
+permissions:
+  contents: read # Reads the repo, writes nothing, needs no secret.
+
+jobs:
+  validate-documents:
+    runs-on: ubuntu-latest
+    # 21 documents x the script's 30s per-request timeout is ~10 min worst case,
+    # and an inconclusive first attempt is retried once after a 2 min pause.
+    # 30 min covers that; past it the job is hung, not slow.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # One version, not the test matrix. The validator is stdlib-only and
+          # is not the thing under test -- the vendor's schema is. Three
+          # versions would ask someone else's production API the same 21
+          # questions three times and learn nothing the first run did not say.
+          python-version: "3.12"
+
+      - name: Check every GraphQL document against the live schema
+        id: validate
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # The lowest document count that still means "the collector works".
+          # collect_documents() discovers documents by scanning the package, so
+          # a refactor that stops the scan matching would validate 3 documents
+          # and print "3/3 validate" -- a shrinking denominator under an
+          # unshrinking claim, the same trap the tests workflow guards with its
+          # 30-test floor. 21 today; this catches a collapse, it is not a
+          # ratchet on every removal.
+          FLOOR=15
+          tmp="${RUNNER_TEMP:-$(mktemp -d)}"
+          out="$tmp/validate.out"
+          err="$tmp/validate.err"
+
+          # --- The distinction this whole job turns on -----------------------
+          #
+          # "The vendor is unreachable" and "a document no longer validates" are
+          # completely different findings, and collapsing them costs in both
+          # directions: a network blip reported as drift sends someone hunting a
+          # bug that does not exist, and after a few of those, real drift in a
+          # flaky week gets waved off as "that thing is always failing".
+          #
+          # The script draws the line itself, so this job does not have to infer
+          # it from output text:
+          #
+          #   0  every document validates
+          #   1  a real finding, and always ours: a document the server now
+          #      rejects, a canary that stopped stopping execution, an empty run
+          #   2  the gateway never produced a usable GraphQL response, so no
+          #      verdict exists -- including HTTP 200 carrying a challenge page,
+          #      a WAF status with an unreadable body, and a response whose
+          #      errors never mention the canary (which means the request never
+          #      reached a validator, whatever else came back)
+          #
+          # Only exit 1 makes this job red. The markers below sub-classify it
+          # for the summary; they never decide reachable-vs-drifted, because
+          # that decision now has an owner.
+
+          classify () { # $1 exit code, $2 stdout file, $3 stderr file
+            case "$1" in
+              0) printf 'VALID'; return ;;
+              2) printf 'INCONCLUSIVE'; return ;;
+            esac
+            # Everything below is exit 1: a defect on our side. Which one is in
+            # the output.
+            if grep -qF '[UNSAFE' "$2"; then printf 'UNSAFE'; return; fi
+            if grep -qF 'No documents found' "$3"; then printf 'EMPTY'; return; fi
+            if grep -qF '[INVALID' "$2"; then printf 'DRIFT'; return; fi
+            # An exit 1 with no marker is a crash -- an exception path the
+            # script does not yet classify. Fail closed: an unexplained failure
+            # is not an outage until something says it is.
+            printf 'BROKEN'
+          }
+
+          document_count () { # $1 stdout file -> echoes the documents checked
+            local line count=0
+            # `|| true` because GitHub runs this with `bash -eo pipefail`: an
+            # unmatched grep inside a command substitution would kill the step
+            # before the verdict is ever reported.
+            line=$(grep -m1 -F 'document(s) against' "$1" || true)
+            if [[ "$line" =~ Validating\ ([0-9]+)\ document ]]; then
+              count="${BASH_REMATCH[1]}"
+            fi
+            printf '%s' "$count"
+          }
+
+          # --- Control probe -------------------------------------------------
+          # Before spending a third party's bandwidth, prove the classifier can
+          # actually tell these apart. One that answered VALID to everything
+          # would be a green light that means nothing, which is precisely the
+          # failure this workflow exists to prevent. Fixtures are the script's
+          # real output shapes, copied from observed runs.
+          #
+          # Honest limit: this pins the classifier against these fixtures, not
+          # against the script. If the script renames a marker, both this probe
+          # and the real classification move together and stay quiet. Hence the
+          # prefix matches above ('[INVALID' not '[INVALID ]'), and hence the
+          # exit-code contract is the real fix.
+          probe () { # $1 expected, $2 exit code, $3 stdout, $4 stderr
+            printf '%s\n' "$3" > "$tmp/probe.out"
+            printf '%s\n' "$4" > "$tmp/probe.err"
+            got=$(classify "$2" "$tmp/probe.out" "$tmp/probe.err")
+            if [ "$got" != "$1" ]; then
+              echo "::error::Classifier control probe failed: expected $1, got $got."
+              exit 1
+            fi
+            printf '  control: %-12s <- exit %s  ok\n' "$1" "$2"
+          }
+
+          echo "Proving the classifier can distinguish the outcomes:"
+          probe VALID 0 '  [VALID   ] graphql.WATCH_PROPERTY_QUERY' ''
+          probe DRIFT 1 '  [INVALID ] graphql.WATCH_PROPERTY_QUERY
+              Cannot query field "renamed" on type "Watch". Did you mean "renamed_at"?' ''
+          probe INCONCLUSIVE 2 'Validating 21 document(s)' 'INCONCLUSIVE: could not reach the gateway: [Errno -2] Name or service not known'
+          probe INCONCLUSIVE 2 'Validating 21 document(s)' 'INCONCLUSIVE: HTTP 403 with a non-JSON body'
+          probe INCONCLUSIVE 2 'Validating 21 document(s)' "INCONCLUSIVE: graphql.X: the canary produced no error, so nothing was validated. Messages: ['Unauthorized']"
+          probe UNSAFE 1 '  [UNSAFE  ] graphql.X: the canary did not stop execution -- a resolver ran.' ''
+          probe EMPTY 1 '' 'No documents found. This check would pass vacuously; refusing.'
+          # A traceback is an exception the script does not classify yet. It
+          # must not quietly become "the vendor is down".
+          probe BROKEN 1 'Validating 21 document(s)' 'Traceback (most recent call last):
+            RuntimeError: something nobody anticipated'
+
+          # And prove the denominator is read correctly, because the floor check
+          # below is worthless if it is not. The header line carries digits that
+          # are not the count -- the gateway URL ends in "v2/ql" -- so stripping
+          # non-digits from the whole line yields 212 instead of 21 and the
+          # floor can never fire. Observed, not imagined: the first draft of
+          # this workflow did exactly that and reported "212 documents".
+          printf 'Validating 21 document(s) against https://api.hexowatch.com/v2/ql, anonymously:\n' > "$tmp/probe.out"
+          got=$(document_count "$tmp/probe.out")
+          if [ "$got" != "21" ]; then
+            echo "::error::Document-count parser is wrong: read '$got' from a header that says 21. The floor check below would be meaningless."
+            exit 1
+          fi
+          printf '  control: %-12s <- parsed %s from a real header  ok\n' "count" "$got"
+          echo
+
+          # --- The real run --------------------------------------------------
+          attempt () { # $1 stdout file, $2 stderr file -> echoes exit code
+            local code=0
+            python3 tools/validate_documents.py >"$1" 2>"$2" || code=$?
+            printf '%s' "$code"
+          }
+
+          show () {
+            cat "$out"
+            if [ -s "$err" ]; then echo "--- stderr ---" >&2; cat "$err" >&2; fi
+          }
+
+          code=$(attempt "$out" "$err")
+          show
+          verdict=$(classify "$code" "$out" "$err")
+
+          # Retry once, and only when the first answer was "no answer". A single
+          # dropped connection should not be filed as a week's worth of
+          # inconclusive; a document that fails validation is not retried,
+          # because the server already answered and the answer will not change.
+          if [ "$verdict" = "INCONCLUSIVE" ]; then
+            echo
+            echo "First attempt produced no verdict (exit $code). Retrying once in 120s..."
+            sleep 120
+            code=$(attempt "$out" "$err")
+            show
+            verdict=$(classify "$code" "$out" "$err")
+          fi
+
+          # The denominator, read rather than assumed.
+          docs=$(document_count "$out")
+
+          echo
+          echo "verdict=$verdict (exit $code, $docs document(s) collected)"
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Schema drift check"
+            echo
+            echo "Gateway: \`https://api.hexowatch.com/v2/ql\` — anonymous, validation-only, no resolver entered."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "$verdict" in
+            VALID)
+              # A pass over a shrunken set is not a pass. Checked here and only
+              # here: this is the one branch where a collapsed denominator can
+              # masquerade as success.
+              if [ "$docs" -lt "$FLOOR" ]; then
+                echo "::error::Only $docs document(s) were collected (floor $FLOOR). The collector in validate_documents.py has stopped finding documents, so this run proves far less than it claims."
+                echo "### FAILED — the check shrank" >> "$GITHUB_STEP_SUMMARY"
+                echo "Collected **$docs** document(s), expected at least **$FLOOR**." >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              echo "### PASS — no drift" >> "$GITHUB_STEP_SUMMARY"
+              echo "All **$docs** documents still validate against the live schema." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+
+            DRIFT)
+              # The finding this job exists for. Red, and worth waking up for:
+              # users of the affected commands are already broken.
+              echo "::error::Schema drift — the live gateway rejects fields this client still sends. The affected commands are broken in production for every user."
+              {
+                echo "### FAILED — the vendor schema moved"
+                echo
+                echo "The gateway rejected fields or arguments this client still sends."
+                echo 'The messages below usually name the replacement ("Did you mean ...?").'
+                echo
+                echo '```'
+                grep -F -A5 '[INVALID' "$out" || true
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+
+            UNSAFE)
+              # Not drift and not an outage: the canary stopped stopping
+              # execution, so a resolver ran. Every past green from this
+              # technique is retroactively in question, and the run may have had
+              # side effects. Loudest possible.
+              echo "::error::The canary did not prevent execution — a resolver ran. Stop using this technique until that is understood; earlier passes cannot be trusted and this run may have had side effects."
+              {
+                echo "### FAILED — the canary stopped working"
+                echo
+                echo "A resolver was entered despite the impossible field. The side-effect-free"
+                echo "guarantee that makes this check safe to run does not currently hold."
+                echo
+                echo '```'
+                grep -F -A2 '[UNSAFE' "$out" || true
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+
+            EMPTY)
+              echo "::error::No documents were collected. The check would have passed vacuously and the script refused — correctly. This is a defect in this repo, not at the vendor."
+              echo "### FAILED — nothing to check" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+
+            INCONCLUSIVE)
+              # The vendor did not answer, twice. That is not evidence of drift
+              # and it is not evidence against it: no verdict was produced.
+              # Green, because a third party's outage is not this repo's defect
+              # and red here would devalue the red above -- but never silent,
+              # and never phrased as a pass.
+              echo "::warning::No verdict — the gateway did not return a usable GraphQL response on either attempt (exit $code). This is NOT a pass: the documents were not checked. Re-run via workflow_dispatch once the gateway answers, and treat a run of these as a vendor-access change (auth now required, WAF block) rather than noise."
+              {
+                echo "### INCONCLUSIVE — nothing was verified"
+                echo
+                echo "The gateway did not return a usable GraphQL response on either attempt,"
+                echo "so **no drift verdict exists for this run**. Treat it as \"unknown\", not"
+                echo "as \"no drift\"."
+                echo
+                echo "Consecutive inconclusive runs are themselves the finding — an outage does"
+                echo "not last three weeks, but an auth requirement or a WAF rule does."
+                echo
+                echo '```'
+                tail -n 15 "$out"
+                if [ -s "$err" ]; then echo "--- stderr ---"; tail -n 15 "$err"; fi
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+
+            BROKEN)
+              # Exit 1 with none of the known markers: the script raised
+              # something it does not yet turn into a verdict. Red on purpose --
+              # an unexplained failure is a defect here until proven otherwise,
+              # and silently filing it as an outage is how a broken check goes
+              # green for months.
+              echo "::error::validate_documents.py failed without producing a verdict (exit $code). That is an unhandled path in the script, not a vendor outage."
+              {
+                echo "### FAILED — the checker itself broke"
+                echo
+                echo "Exit 1 with no \`[INVALID\`, \`[UNSAFE\` or empty-run marker."
+                echo
+                echo '```'
+                tail -n 20 "$err"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+
+            *)
+              echo "::error::Unclassifiable result (verdict='$verdict', exit $code). The classifier in this workflow is wrong, which means its greens are worthless."
+              exit 1
+              ;;
+          esac

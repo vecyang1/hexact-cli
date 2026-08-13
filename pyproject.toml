@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hexact-cli"
+description = "An agentic command-line client for the Hexact suite -- Hexowatch, Hexomatic, Hexometer and Hexospark."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "vecyang1" }]
+keywords = [
+    "hexact",
+    "hexowatch",
+    "hexomatic",
+    "hexometer",
+    "hexospark",
+    "website-monitoring",
+    "change-detection",
+    "cli",
+    "agent",
+    "graphql",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Site Management",
+    "Topic :: System :: Monitoring",
+    "Topic :: Utilities",
+]
+
+# Deliberately empty, and it must stay that way. Everything this client needs --
+# HTTP, JSON, TLS, argument parsing, getpass -- is in the standard library, so
+# `pipx install` cannot fail on a transitive resolution and there is no supply
+# chain to audit beyond CPython itself. Adding a dependency here is a change of
+# character, not a convenience; reach for `urllib.request` instead.
+dependencies = []
+
+# Read from `hexact/__init__.py` rather than typed here. The same value written
+# in two places is exactly how this project once shipped a User-Agent that lied
+# about its version (see the comment above `USER_AGENT` in `hexact/http.py`):
+# one place bumped, the other did not, and nothing went red.
+dynamic = ["version"]
+
+[project.scripts]
+# `main()` returns an int exit code. The console script setuptools generates
+# wraps this as `sys.exit(main())`, so the code propagates to the shell -- the
+# same contract `hexact/__main__.py` already implements for `python3 -m hexact`.
+hexact = "hexact.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/vecyang1/hexact-cli"
+Repository = "https://github.com/vecyang1/hexact-cli"
+Issues = "https://github.com/vecyang1/hexact-cli/issues"
+Documentation = "https://github.com/vecyang1/hexact-cli/blob/main/docs/API.md"
+Changelog = "https://github.com/vecyang1/hexact-cli/blob/main/CHANGELOG.md"
+
+[tool.setuptools.dynamic]
+version = { attr = "hexact.__version__" }
+
+# Only the package ships. `tools/` is reverse-engineering scaffolding that talks
+# to the live schema and `tests/` is hermetic-by-construction; neither belongs on
+# an installing user's `sys.path` as an importable top-level name.
+[tool.setuptools.packages.find]
+include = ["hexact*"]
+namespaces = false

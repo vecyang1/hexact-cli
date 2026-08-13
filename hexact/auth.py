@@ -178,7 +178,7 @@ def _token_from_response(
             "  Most likely cause: the stored value is an access token, not a "
             "refresh token. They are different fields on UserLoginResponse and "
             "only the refresh token can be exchanged.\n"
-            "  Fix: re-run `hexact auth login`. This build classifies the "
+            "  Fix: re-run `hexact auth login --email <you>`. This build classifies "
             "credential before it hands it back and exchanges it once before "
             "storing, so it cannot persist this shape again. Or set "
             "HEXOWATCH_ACCESS_TOKEN to use an access token directly for the "

@@ -29,7 +29,17 @@ It proves the document would be accepted. That is a floor, not a ceiling, and
 it is a floor nothing else was checking.
 
 Run:  python3 tools/validate_documents.py
-Exit: 0 when every document validates, 1 otherwise.
+Exit: 0 every document validates
+      1 a document no longer validates, or this check has become unsafe
+      2 the gateway never answered -- no verdict was reached
+
+**Two is not a softer one.** "The vendor renamed a field" and "the vendor did
+not answer" are different findings, and collapsing them costs in both
+directions: a network blip reads as drift and sends someone hunting a bug that
+does not exist, and after a few of those, a real drift gets dismissed as noise.
+An unreachable gateway is an *absence of evidence*, so it gets its own code and
+its own word -- inconclusive -- and the caller decides what to do about a week
+of them.
 """
 
 from __future__ import annotations
@@ -61,6 +71,16 @@ def with_canary(document: str) -> str:
     return f"{document[:end]} {CANARY} {document[end:]}"
 
 
+class GatewaySilent(Exception):
+    """The gateway did not produce an answer this check can reason about.
+
+    Raised for transport failure, a non-JSON body (a WAF challenge page is a
+    200 carrying HTML), and for a response that is valid JSON but contains no
+    canary error -- which means the request never reached a GraphQL validator,
+    so nothing was tested no matter what else came back.
+    """
+
+
 def post(document: str, variables: dict | None = None) -> dict:
     request = urllib.request.Request(
         graphql.GRAPHQL_URL,
@@ -69,14 +89,31 @@ def post(document: str, variables: dict | None = None) -> dict:
                  "User-Agent": f"hexact-cli-validate/{graphql.__name__}"},
         method="POST",
     )
+    # HTTPError first: it subclasses URLError, so the order is load-bearing.
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode())
+            body = response.read().decode()
     except urllib.error.HTTPError as exc:
         try:
             return json.loads(exc.read().decode())
-        except Exception:  # noqa: BLE001
-            return {"_http": exc.code}
+        except Exception as inner:  # noqa: BLE001
+            # A status code with an unreadable body is the shape a WAF block
+            # takes. Returning `{"_http": code}` here -- as this did -- gave
+            # every document an empty error list, which the check below then
+            # reported per-document as if it had examined them.
+            raise GatewaySilent(f"HTTP {exc.code} with a non-JSON body") from inner
+    except urllib.error.URLError as exc:
+        raise GatewaySilent(f"could not reach the gateway: {exc.reason}") from None
+    except TimeoutError as exc:
+        raise GatewaySilent(f"the gateway timed out: {exc}") from None
+
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise GatewaySilent(
+            f"HTTP 200 with a non-JSON body ({len(body)} bytes) -- a challenge "
+            f"page answers 200 too"
+        ) from exc
 
 
 def collect_documents() -> dict[str, str]:
@@ -122,9 +159,14 @@ def check(label: str, document: str) -> bool:
 
     messages = [e.get("message", "") for e in (payload.get("errors") or [])]
     if not any(CANARY_ERROR.search(m) for m in messages):
-        print(f"  [ERROR   ] {label}: the canary produced no error, so this "
-              f"check proves nothing. Messages: {messages[:3]}")
-        return False
+        # No canary error means the document never reached a GraphQL validator.
+        # Whatever else came back -- an empty list, `Unauthorized`, a proxy's
+        # own error envelope -- this document was not examined, and neither
+        # will the rest be. That is inconclusive, not invalid.
+        raise GatewaySilent(
+            f"{label}: the canary produced no error, so nothing was validated. "
+            f"Messages: {messages[:3]}"
+        )
 
     others = [m for m in messages if not CANARY_ERROR.search(m)]
     # Variables declared but unused by the trimmed document are not a schema
@@ -149,7 +191,17 @@ def main() -> int:
 
     print(f"Validating {len(documents)} document(s) against "
           f"{graphql.GRAPHQL_URL}, anonymously:\n")
-    results = [check(label, doc) for label, doc in sorted(documents.items())]
+    try:
+        results = [check(label, doc) for label, doc in sorted(documents.items())]
+    except GatewaySilent as exc:
+        # Deliberately not a partial score. If the gateway stopped answering
+        # part way through, the documents already checked are still valid but
+        # the run as a whole reached no verdict, and printing "7/21" invites
+        # someone to read the missing 14 as failures.
+        print(f"\nINCONCLUSIVE: {exc}\n"
+              f"No verdict: this run did not test the schema. Read it as "
+              f"unknown, not as 'no drift'.", file=sys.stderr)
+        return 2
 
     bad = results.count(False)
     print(f"\n{results.count(True)}/{len(results)} validate against the live schema.")

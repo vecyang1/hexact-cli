@@ -172,10 +172,25 @@ def resolve_key(service: str) -> str:
             return key
 
     if service == HEXOWATCH_SESSION:
+        # This message must name neither a product nor an operation, because
+        # one session token serves the whole suite and every GraphQL command
+        # raises this same error. Measured 2026-08-14 across six command
+        # families: the previous wording, "No Hexowatch session token found.
+        # Delete and update are GraphQL-only...", was printed verbatim by
+        # `matic credits`, `spark contacts` and `meter overview` -- naming a
+        # product the user may not own and an operation they did not run. The
+        # remedy underneath was correct, which is what made it expensive: a
+        # reader who does not use Hexowatch reasonably concludes the error is
+        # about something else and never reaches the fix. An accurate
+        # diagnosis with a correct remedy is not the same as a wrong diagnosis
+        # with a correct remedy.
         raise CredentialError(
-            "No Hexowatch session token found. Delete and update are GraphQL-only "
-            "and the REST API key does not authenticate there.\n"
-            "  Run: hexact auth login\n"
+            "No Hexact session token found. This command reads the GraphQL "
+            "gateway, which the REST API keys do not authenticate against -- "
+            "it needs the dashboard session credential instead. One session "
+            "covers the whole suite; Hexowatch, Hexomatic, Hexometer and "
+            "Hexospark share the same gateway.\n"
+            "  Run: hexact auth login --email <you>\n"
             f"  Or set {_OP_REF_VARS[service]}='op://Vault/Item/field'"
         )
 

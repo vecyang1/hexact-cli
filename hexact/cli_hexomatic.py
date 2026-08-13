@@ -1,7 +1,9 @@
-"""Hexomatic commands that only the GraphQL gateway can serve.
+"""Hexomatic commands, over both transports.
 
-Two things REST cannot answer, both of which matter on a lifetime plan with a
-fixed monthly credit allowance:
+`workflows`, `workflow`, `logs` and `enable`/`disable` are the documented REST
+endpoints and need only an API key. `credits`, `detail` and `results` need a
+session token, because the gateway is the only thing that serves them -- and two
+of those matter on a lifetime plan with a fixed monthly credit allowance:
 
 **What a workflow produced.** REST returns the workflow and its execution log,
 never the rows it scraped. The gateway does, either as a link to the full JSON
@@ -24,6 +26,8 @@ import json
 from typing import Any
 
 from . import auth, hexomatic
+from .cli_common import _rows
+from .config import HEXOMATIC, resolve_key
 from .output import EXIT_OK, emit
 
 
@@ -135,4 +139,45 @@ def cmd_results(args: argparse.Namespace) -> int:
             print(json.dumps(rows, indent=2, ensure_ascii=False, default=str))
 
     emit(payload, args.json, render)
+    return EXIT_OK
+
+
+def cmd_workflows(args: argparse.Namespace) -> int:
+    key = resolve_key(HEXOMATIC)
+    payload = hexomatic.list_workflows(key, limit=args.limit)
+
+    def render(data: dict[str, Any]) -> None:
+        rows = _rows(data, "workflows", "data")
+        if not rows:
+            print("No workflows found.")
+            return
+        print(f"{len(rows)} workflow(s):\n")
+        for row in rows:
+            state = "active" if row.get("active") else "inactive"
+            print(f"  [{row.get('id')}] {row.get('name') or '(unnamed)'}  ({state})")
+
+    emit(payload, args.json, render)
+    return EXIT_OK
+
+
+def cmd_workflow(args: argparse.Namespace) -> int:
+    key = resolve_key(HEXOMATIC)
+    payload = hexomatic.get_workflow(key, args.workflow_id)
+    emit(payload, True, lambda data: None)
+    return EXIT_OK
+
+
+def cmd_workflow_logs(args: argparse.Namespace) -> int:
+    key = resolve_key(HEXOMATIC)
+    payload = hexomatic.workflow_logs(key, args.workflow_id)
+    emit(payload, True, lambda data: None)
+    return EXIT_OK
+
+
+def cmd_workflow_toggle(args: argparse.Namespace) -> int:
+    key = resolve_key(HEXOMATIC)
+    active = args.state == "enable"
+    payload = hexomatic.set_active(key, args.ids, active)
+    emit(payload, args.json,
+          lambda _: print(f"{args.state}d workflow(s) {', '.join(map(str, args.ids))}."))
     return EXIT_OK
