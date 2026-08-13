@@ -92,10 +92,28 @@ ARG_VOCABULARY: set[str] = {
 }
 _vocabulary_lock = threading.Lock()
 
+# Every *field* name seen anywhere, used only as a last-resort seed set for a
+# namespace whose own seeds found nothing. Sibling `*Ops` namespaces reuse names
+# heavily, so a real field can sit outside the edit threshold of any generic or
+# stem-derived seed while being one edit from a sibling's real field name.
+# Measured: this cracked 6 of 9 previously-empty namespaces (+17 fields,
+# AdminOps/AlertOps/BillingOps/Billing/HexometerIssues/HexosparkUnifiedInbox).
+FIELD_VOCABULARY: set[str] = set()
+
 
 def remember_arguments(names: set[str]) -> None:
     with _vocabulary_lock:
         ARG_VOCABULARY.update(names)
+
+
+def remember_fields(names: set[str]) -> None:
+    with _vocabulary_lock:
+        FIELD_VOCABULARY.update(names)
+
+
+def field_dictionary() -> list[str]:
+    with _vocabulary_lock:
+        return sorted(FIELD_VOCABULARY)
 
 
 _print_lock = threading.Lock()
@@ -187,6 +205,8 @@ def seeds_for(namespace: str) -> list[str]:
     """Probe names sized like the real thing, none of which can exist."""
     stem = namespace_stem(namespace)
     seeds = [f"{verb}Zz" for verb in VERBS]
+    if not stem:  # a namespace named exactly "Ops"/"Opts" leaves nothing to cross
+        return seeds
     seeds += [f"{verb}{stem}Zz" for verb in VERBS]
     seeds += [f"{verb}{stem}sZz" for verb in ("get", "list", "update", "delete")]
     seeds.append(f"{stem[0].lower()}{stem[1:]}Zz")
@@ -212,6 +232,14 @@ def walk_fields(
     so are *likely* to collide with a real field: an unguarded probe that
     happens to name a real no-required-argument mutation would run it.
 
+    A namespace that answers *nothing* gets one extra pass seeded from
+    `FIELD_VOCABULARY` -- every field name seen anywhere in this schema. Sibling
+    `*Ops` namespaces reuse names, so a real field can be unreachable from any
+    stem-derived seed yet one edit from a sibling's real name. Measured: 6 of 9
+    silent namespaces cracked this way (+17 fields). It runs only for empty
+    namespaces because the dictionary is large and the cheaper seeds already
+    cover the rest.
+
     **This returns a lower bound, not the field list.** Calibrated against nine
     hand-verified `WatchOps` fields: the walk found 13 (five genuinely new) but
     still missed `adminDelete`, which no seed came within the suggester's edit
@@ -223,23 +251,38 @@ def walk_fields(
     known: set[str] = set(prior or ())
     frontier = seeds_for(namespace) + [v for name in known for v in variants(name)]
     seen_probes: set[str] = set()
+    used_dictionary = False
 
-    for _ in range(8):  # bounded; converges in 3-4 in practice
-        frontier = [p for p in frontier if p not in seen_probes]
-        if not frontier:
+    while True:
+        for _ in range(8):  # bounded; converges in 3-4 in practice
+            frontier = [p for p in frontier if p not in seen_probes]
+            if not frontier:
+                break
+            seen_probes.update(frontier)
+            documents = [
+                f"{kind} {{ {namespace} {{ {probe}({BOGUS_ARG}) }} }}" for probe in frontier
+            ]
+            found: set[str] = set()
+            for payload in pool.map(gateway.post, documents):
+                found |= gateway.suggestions(payload)
+            fresh = {name for name in found - known if name != namespace}
+            if not fresh:
+                break
+            known |= fresh
+            remember_fields(fresh)
+            frontier = [v for name in fresh for v in variants(name)]
+
+        # Last resort for a namespace that answered nothing. Only here, because
+        # the dictionary is ~300 names x 2 variants and applying it to all 94
+        # namespaces would add tens of thousands of requests for names the
+        # cheaper seeds already found.
+        if known or used_dictionary:
             break
-        seen_probes.update(frontier)
-        documents = [
-            f"{kind} {{ {namespace} {{ {probe}({BOGUS_ARG}) }} }}" for probe in frontier
-        ]
-        found: set[str] = set()
-        for payload in pool.map(gateway.post, documents):
-            found |= gateway.suggestions(payload)
-        fresh = {name for name in found - known if name != namespace}
-        if not fresh:
+        dictionary = [v for name in field_dictionary() for v in variants(name)]
+        if not dictionary:
             break
-        known |= fresh
-        frontier = [v for name in fresh for v in variants(name)]
+        used_dictionary = True
+        frontier = dictionary
     return known
 
 
@@ -415,8 +458,13 @@ def main() -> int:
         previous = json.loads(Path(args.merge).read_text(encoding="utf-8"))
         for key, entry in previous.get("namespaces", {}).items():
             prior_fields[key] = set(entry.get("fields", {}))
+        # Cross-namespace dictionary, not just per-namespace priors: a name from
+        # a sibling namespace is what cracks an otherwise-silent one.
+        for names in prior_fields.values():
+            remember_fields(names)
         log(f"seeding from {args.merge}: "
-            f"{sum(len(v) for v in prior_fields.values())} known names")
+            f"{sum(len(v) for v in prior_fields.values())} known names "
+            f"({len(FIELD_VOCABULARY)} distinct, reused as a fallback dictionary)")
 
     gateway = Gateway(HOSTS[args.host])
     result: dict = {"host": args.host, "url": gateway.url, "namespaces": {}}
