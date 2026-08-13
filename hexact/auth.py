@@ -22,13 +22,22 @@ narrow enough to read in one screen, which is the point.
 from __future__ import annotations
 
 import getpass
+import json
 import os
+import shlex
 import stat
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from . import graphql
 from .config import HEXOWATCH_SESSION, CredentialError, credentials_path, resolve_key
+
+# Writing an item is not gated on a biometric prompt for a service account, but
+# it is for an interactive one. A bounded wait turns "hung forever in cron" into
+# a clear failure, matching hexact/config.py's read timeout.
+_OP_WRITE_TIMEOUT_SECONDS = 30
 
 _REFRESH_MUTATION = """
 mutation($email: String!, $password: String!) {
@@ -136,6 +145,78 @@ def store_refresh_token(token: str) -> Path:
         handle.write("\n".join(lines) + "\n")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return path
+
+
+def store_refresh_token_1password(
+    token: str,
+    *,
+    item_title: str,
+    vault: str,
+    op_cmd: list[str] | None = None,
+) -> str:
+    """Store the refresh token as a 1Password item, without exposing it.
+
+    The token is passed in a **JSON template file** created mode 600, never as a
+    command-line assignment. 1Password's own CLI says so: ``op item create``
+    documents that sensitive values belong in a template rather than an
+    assignment statement, because argv is readable by every process on the
+    machine.
+
+    The child's stdout is discarded rather than returned, since ``op item
+    create`` echoes the item it made -- which in an agent session would put the
+    credential straight into a captured transcript.
+
+    Returns the ``op://`` reference to put in ``HEXOWATCH_REFRESH_OP_REF``.
+    """
+    command = op_cmd or shlex.split(os.environ.get("HEXACT_OP_CMD", "op"))
+    template = {
+        "title": item_title,
+        "category": "API_CREDENTIAL",
+        "fields": [
+            {"id": "credential", "type": "CONCEALED", "label": "credential",
+             "value": token},
+            {"id": "notesPlain", "type": "STRING", "label": "notesPlain",
+             "value": ("Hexowatch GraphQL refresh token, written by `hexact auth "
+                       "login`. Full-account scope -- broader than the REST API "
+                       "key. Mint access tokens with UserOps.authAccessToken.")},
+        ],
+    }
+
+    handle, path = tempfile.mkstemp(prefix="hexact-op-", suffix=".json")
+    try:
+        os.fchmod(handle, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(template, stream)
+        completed = subprocess.run(
+            [*command, "item", "create", "--vault", vault, "--template", path],
+            capture_output=True, text=True, timeout=_OP_WRITE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise LoginError(
+            f"{command[0]!r} is not installed, so the token could not be stored "
+            "in 1Password. Re-run with --store file, or set HEXACT_OP_CMD."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LoginError(
+            f"Timed out after {_OP_WRITE_TIMEOUT_SECONDS}s writing to 1Password. "
+            "An interactive unlock cannot succeed unattended; use a service account."
+        ) from exc
+    finally:
+        # The window where the token exists on disk is this function's body, and
+        # the file is owner-only for all of it.
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    if completed.returncode != 0:
+        # `op` reports the item and the vault, not the secret, so this is safe
+        # to surface.
+        detail = completed.stderr.strip() or f"exit status {completed.returncode}"
+        raise LoginError(f"Could not create the 1Password item: {detail}")
+
+    return f"op://{vault}/{item_title}/credential"
 
 
 def status() -> tuple[str, str]:

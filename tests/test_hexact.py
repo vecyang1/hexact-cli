@@ -16,6 +16,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import unittest
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -659,3 +660,75 @@ class TestLoginNeverContinuesOnAnEmptyToken(unittest.TestCase):
                              "credentials file must not be group- or world-readable")
             self.assertIn("HEXOWATCH_REFRESH_TOKEN=s3cret-refresh-token",
                           path.read_text(encoding="utf-8"))
+
+
+class TestOnePasswordWriteNeverExposesTheToken(unittest.TestCase):
+    """A secret in argv is readable by every process on the machine.
+
+    1Password's own CLI documents that sensitive values belong in a JSON
+    template rather than an assignment statement, so these assert the token
+    never becomes a command-line argument and never survives on disk.
+    """
+
+    TOKEN = "refresh-token-SHOULD-NOT-APPEAR-IN-ARGV"
+
+    def _capture(self):
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen["command"] = command
+            template = [a for a in command if a.endswith(".json")]
+            seen["template_path"] = template[0] if template else None
+            if seen["template_path"]:
+                path = Path(seen["template_path"])
+                seen["template_mode"] = path.stat().st_mode
+                seen["template_body"] = path.read_text(encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        return seen, fake_run
+
+    def test_token_is_not_passed_as_an_argument(self):
+        seen, fake_run = self._capture()
+        with mock.patch.object(auth.subprocess, "run", side_effect=fake_run):
+            auth.store_refresh_token_1password(
+                self.TOKEN, item_title="T", vault="V", op_cmd=["op"])
+        self.assertNotIn(self.TOKEN, " ".join(seen["command"]))
+        self.assertIn(self.TOKEN, seen["template_body"])
+
+    def test_template_file_is_owner_only_while_it_exists(self):
+        seen, fake_run = self._capture()
+        with mock.patch.object(auth.subprocess, "run", side_effect=fake_run):
+            auth.store_refresh_token_1password(
+                self.TOKEN, item_title="T", vault="V", op_cmd=["op"])
+        self.assertFalse(seen["template_mode"] & (stat.S_IRWXG | stat.S_IRWXO))
+
+    def test_template_file_is_removed_afterwards(self):
+        seen, fake_run = self._capture()
+        with mock.patch.object(auth.subprocess, "run", side_effect=fake_run):
+            auth.store_refresh_token_1password(
+                self.TOKEN, item_title="T", vault="V", op_cmd=["op"])
+        self.assertFalse(Path(seen["template_path"]).exists())
+
+    def test_template_is_removed_even_when_op_fails(self):
+        seen = {}
+
+        def failing(command, **kwargs):
+            seen["template_path"] = [a for a in command if a.endswith(".json")][0]
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="denied")
+
+        with mock.patch.object(auth.subprocess, "run", side_effect=failing):
+            with self.assertRaises(auth.LoginError):
+                auth.store_refresh_token_1password(
+                    self.TOKEN, item_title="T", vault="V", op_cmd=["op"])
+        self.assertFalse(Path(seen["template_path"]).exists(),
+                         "a failed write must not leave the token on disk")
+
+    def test_returns_an_op_reference_not_the_token(self):
+        _, fake_run = self._capture()
+        with mock.patch.object(auth.subprocess, "run", side_effect=fake_run):
+            reference = auth.store_refresh_token_1password(
+                self.TOKEN, item_title="Hexowatch Session", vault="Agent Automation",
+                op_cmd=["op"])
+        self.assertEqual(reference,
+                         "op://Agent Automation/Hexowatch Session/credential")
+        self.assertNotIn(self.TOKEN, reference)

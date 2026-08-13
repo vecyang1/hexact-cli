@@ -580,14 +580,26 @@ def cmd_auth_login(args: argparse.Namespace) -> int:
         return EXIT_USAGE
 
     refresh = auth.login(args.email, password)
-    path = auth.store_refresh_token(refresh)
+
+    if args.store == "1password":
+        reference = auth.store_refresh_token_1password(
+            refresh, item_title=args.op_item, vault=args.op_vault)
+        result = {"stored": reference, "backend": "1password", "email": args.email,
+                  "next": f"export HEXOWATCH_REFRESH_OP_REF='{reference}'"}
+        receipt = (f"Stored a refresh token for {result['email']} as "
+                   f"{result['stored']}.\nThe token itself was not printed.\n\n"
+                   f"  {result['next']}\n\nVerify with: hexact auth status")
+    else:
+        path = auth.store_refresh_token(refresh)
+        result = {"stored": str(path), "backend": "file", "email": args.email,
+                  "next": "hexact auth status"}
+        receipt = (f"Stored a refresh token for {result['email']} in "
+                   f"{result['stored']} (owner-only).\nThe token itself was not "
+                   f"printed. Verify with: hexact auth status")
 
     # A receipt, deliberately not the token. Printing it would put a
     # full-account credential into terminal scrollback and any agent transcript.
-    result = {"stored": str(path), "email": args.email, "token_length": len(refresh)}
-    _emit(result, args.json, lambda d: print(
-        f"Stored a refresh token for {d['email']} in {d['stored']} (owner-only).\n"
-        f"The token itself was not printed. Verify with: hexact auth status"))
+    _emit(result, args.json, lambda d: print(receipt))
     return EXIT_OK
 
 
@@ -851,6 +863,12 @@ def build_parser() -> argparse.ArgumentParser:
     auth_login = auth_sub.add_parser(
         "login", help="prompt for a password and store a refresh token")
     auth_login.add_argument("--email", required=True)
+    auth_login.add_argument("--store", choices=("1password", "file"), default="1password",
+                            help="where to keep the refresh token (default 1password)")
+    auth_login.add_argument("--op-vault", default="Agent Automation",
+                            help="1Password vault (default 'Agent Automation')")
+    auth_login.add_argument("--op-item", default="Hexowatch Session - refresh token",
+                            help="1Password item title")
     auth_login.set_defaults(func=cmd_auth_login)
 
     auth_sub.add_parser(

@@ -84,6 +84,18 @@ MUTATIONS = [
         'groups.setdefault((_normalise_address(str(address)), tool), []).append(monitor)',
         'groups.setdefault((_normalise_address(str(address)), "X"), []).append(monitor)',
     ),
+    (
+        "the 1Password write passes the token as a command-line argument",
+        "hexact/auth.py",
+        '            [*command, "item", "create", "--vault", vault, "--template", path],',
+        '            [*command, "item", "create", "--vault", vault, f"credential={token}"],',
+    ),
+    (
+        "a failed 1Password write leaves the token on disk",
+        "hexact/auth.py",
+        '    finally:\n        # The window where the token exists on disk is this function\'s body, and\n        # the file is owner-only for all of it.\n        try:\n            os.unlink(path)\n        except OSError:\n            pass',
+        '    finally:\n        pass',
+    ),
 ]
 
 
