@@ -732,3 +732,20 @@ class TestOnePasswordWriteNeverExposesTheToken(unittest.TestCase):
         self.assertEqual(reference,
                          "op://Agent Automation/Hexowatch Session/credential")
         self.assertNotIn(self.TOKEN, reference)
+
+
+class TestVersionIsNotWrittenTwice(unittest.TestCase):
+    def test_user_agent_carries_the_package_version(self):
+        """Two independent copies of one fact drift silently.
+
+        `__version__` and the version embedded in `USER_AGENT` are separate
+        string literals, so bumping one and forgetting the other produces a
+        client that misreports itself to the vendor -- with nothing failing.
+        Decidable, so it belongs in a check rather than a comment.
+        """
+        from hexact import __version__
+        from hexact.http import USER_AGENT
+        self.assertTrue(
+            USER_AGENT.startswith(f"hexact-cli/{__version__} "),
+            f"USER_AGENT {USER_AGENT!r} does not carry version {__version__!r}",
+        )

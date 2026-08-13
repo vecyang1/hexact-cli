@@ -30,7 +30,7 @@ DEFAULT_TIMEOUT_SECONDS = 60
 # 2026-08-13: curl's own `curl/8.x` agent passes, so the block targets the
 # urllib signature specifically rather than demanding a browser. An honest
 # self-identifying agent is therefore enough; do not spoof a browser here.
-USER_AGENT = "hexact-cli/0.1.0 (+https://github.com/vecyang1/hexact-cli)"
+USER_AGENT = "hexact-cli/0.2.0 (+https://github.com/vecyang1/hexact-cli)"
 
 # Matches the credential in `?key=...` / `&key=...` regardless of position.
 _KEY_PATTERN = re.compile(r"([?&]key=)[^&\s]*")
