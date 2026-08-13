@@ -69,8 +69,35 @@ MUTATIONS = [
     (
         "login continues with an empty token",
         "hexact/auth.py",
-        '    token = result.get("token")\n    if not token:',
-        '    token = result.get("token")\n    if False:',
+        '    token = result.get(field_name)\n    if not token:',
+        '    token = result.get(field_name)\n    if False:',
+    ),
+    (
+        # The bug this file exists to prevent recurring: `token` and
+        # `refresh_token` are both real fields, so selecting the wrong one
+        # authenticates for an hour and then dies unrenewable.
+        "login stores the access token instead of the refresh token",
+        "hexact/auth.py",
+        'return _token_from_response(data, "authRefreshToken", field_name="refresh_token")',
+        'return _token_from_response(data, "authRefreshToken", field_name="token")',
+    ),
+    (
+        "a deleted monitor reading back as all-nulls counts as still present",
+        "hexact/cli.py",
+        '        if not monitor or monitor.get("id") in (None, "", 0):',
+        '        if False:',
+    ),
+    (
+        "an API error during delete read-back counts as proof of deletion",
+        "hexact/cli.py",
+        '            unverified.append({"id": target["id"], "reason": str(exc)})\n            continue\n        if not monitor',
+        '            confirmed.append(target["id"])\n            continue\n        if not monitor',
+    ),
+    (
+        "mute drops the empty list instead of sending it",
+        "hexact/graphql.py",
+        '    supplied = {name: spec for name, spec in arguments.items() if spec[1] is not None}',
+        '    supplied = {name: spec for name, spec in arguments.items() if spec[1]}',
     ),
     (
         "the stored credentials file is world-readable",
