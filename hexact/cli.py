@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import hexomatic, hexometer, hexowatch
+from . import auth, graphql, hexomatic, hexometer, hexowatch
 from .config import HEXOMATIC, HEXOMETER, HEXOWATCH, CredentialError, resolve_key
 from .http import HexactAPIError, redact
 
@@ -560,6 +560,204 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# GraphQL-only operations
+#
+# Everything below needs a session token rather than an API key, because the
+# REST API has no delete and no update -- measured, not assumed. See
+# hexact/graphql.py for the traps that shape this.
+# --------------------------------------------------------------------------
+
+def cmd_auth_login(args: argparse.Namespace) -> int:
+    """Exchange email + password for a stored refresh token.
+
+    The password is read from the terminal, never from a flag: argv is visible
+    to every process on the machine and lands in shell history. It is used for
+    one request and never written anywhere.
+    """
+    password = auth.prompt_password()
+    if not password:
+        print("No password entered; nothing was sent.", file=sys.stderr)
+        return EXIT_USAGE
+
+    refresh = auth.login(args.email, password)
+    path = auth.store_refresh_token(refresh)
+
+    # A receipt, deliberately not the token. Printing it would put a
+    # full-account credential into terminal scrollback and any agent transcript.
+    result = {"stored": str(path), "email": args.email, "token_length": len(refresh)}
+    _emit(result, args.json, lambda d: print(
+        f"Stored a refresh token for {d['email']} in {d['stored']} (owner-only).\n"
+        f"The token itself was not printed. Verify with: hexact auth status"))
+    return EXIT_OK
+
+
+def cmd_auth_status(args: argparse.Namespace) -> int:
+    """Report whether the stored token actually works.
+
+    Distinguishes ``unknown`` (the gateway was unreachable) from ``rejected``
+    (it answered and refused). Collapsing those is how a working credential
+    gets rotated for no reason.
+    """
+    verdict, detail = auth.status()
+    marks = {"authenticated": "OK  ", "rejected": "FAIL",
+             "missing": "SKIP", "unknown": "????"}
+    _emit({"verdict": verdict, "detail": detail}, args.json,
+          lambda d: print(f"[{marks[d['verdict']]}] {d['verdict']}: {d['detail']}"))
+    return EXIT_OK if verdict == "authenticated" else EXIT_FAILURE
+
+
+def cmd_watch_show(args: argparse.Namespace) -> int:
+    """One monitor's real configuration.
+
+    REST returns four fields and no tool; this returns what the monitor is
+    actually set to do, which is also what makes a subsequent write verifiable.
+    """
+    token = auth.access_token()
+    monitor = graphql.get_watch_property(token, args.monitoring_id)
+    try:
+        monitor["integrations"] = graphql.get_watch_property_integrations(
+            token, args.monitoring_id)
+    except HexactAPIError as exc:
+        monitor["integrations"] = None
+        monitor["integrations_error"] = str(exc)
+
+    def render(data: dict[str, Any]) -> None:
+        for field in ("id", "name", "url", "tool", "active",
+                      "change_notification_level", "createdAt"):
+            print(f"  {field:28} {data.get(field)}")
+        channels = (data.get("integrations") or {}).get("integrations")
+        if channels is None:
+            print(f"  {'integrations':28} unavailable: {data.get('integrations_error')}")
+        else:
+            print(f"  {'integrations':28} {len(channels)} attached")
+            for channel in channels:
+                label = channel.get("slackIntegration") or (
+                    (channel.get("email") or {}).get("email")) or ""
+                print(f"      [{channel.get('id')}] {channel.get('type')} {label}")
+
+    _emit(monitor, args.json, render)
+    return EXIT_OK
+
+
+def cmd_watch_delete(args: argparse.Namespace) -> int:
+    """Permanently delete monitors. Irreversible, so it asks first.
+
+    Prints what each id actually is before doing anything: an id is not a
+    recognisable thing, and "delete 337094" is not something anyone can sanity
+    check without being told it means a duplicate meetup.com visual monitor.
+    """
+    # Refuse before touching the network. A command that will decline anyway has
+    # no business spending a request, and this keeps the guard verifiable
+    # without mocking a transport.
+    if not args.yes:
+        listed = " ".join(str(i) for i in args.ids)
+        print(f"Refusing to delete {len(args.ids)} monitor(s) without --yes: {listed}\n"
+              f"Hexowatch has no undo and no trash.\n"
+              f"Inspect first:  hexact watch show {args.ids[0]}\n"
+              f"Then:           hexact watch delete {listed} --yes", file=sys.stderr)
+        return EXIT_USAGE
+
+    token = auth.access_token()
+
+    targets = []
+    for monitoring_id in args.ids:
+        try:
+            monitor = graphql.get_watch_property(token, monitoring_id)
+            targets.append({"id": monitoring_id, "url": monitor.get("url"),
+                            "tool": monitor.get("tool"), "name": monitor.get("name")})
+        except HexactAPIError as exc:
+            targets.append({"id": monitoring_id, "url": None, "tool": None,
+                            "error": str(exc)})
+
+    graphql.delete_monitors(token, list(args.ids))
+
+    # A mutation answering `{"error": false}` is a claim, not proof. Read each
+    # id back: the delete is confirmed by the monitor no longer resolving.
+    confirmed, still_present = [], []
+    for target in targets:
+        try:
+            graphql.get_watch_property(token, target["id"])
+            still_present.append(target["id"])
+        except graphql.AuthError:
+            confirmed.append(target["id"])
+        except HexactAPIError:
+            confirmed.append(target["id"])
+
+    result = {"requested": list(args.ids), "deleted": confirmed,
+              "still_present": still_present, "targets": targets}
+
+    def render(data: dict[str, Any]) -> None:
+        print(f"Deleted {len(data['deleted'])} of {len(data['requested'])} monitor(s), "
+              f"confirmed by read-back.")
+        for target in data["targets"]:
+            state = "gone" if target["id"] in data["deleted"] else "STILL PRESENT"
+            print(f"  {target['id']}  {state}  {target.get('url') or ''}")
+
+    _emit(result, args.json, render)
+    return EXIT_OK if not still_present else EXIT_FAILURE
+
+
+def cmd_watch_retune(args: argparse.Namespace) -> int:
+    """Change the alert threshold or interval on existing monitors.
+
+    This is the lever the REST API never had. ``--level GE_5`` on the visual and
+    content monitors is what addresses sub-1% alert noise at source, rather than
+    filtering it after delivery.
+    """
+    if args.level is None and args.interval is None:
+        raise ValueError("Nothing to change: pass --level and/or --interval.")
+
+    token = auth.access_token()
+    before = {}
+    for monitoring_id in args.ids:
+        try:
+            monitor = graphql.get_watch_property(token, monitoring_id)
+            before[monitoring_id] = {
+                "tool": monitor.get("tool"),
+                "change_notification_level": monitor.get("change_notification_level"),
+            }
+        except HexactAPIError as exc:
+            before[monitoring_id] = {"error": str(exc)}
+
+    graphql.update_monitors(
+        token, list(args.ids),
+        change_notification_level=args.level,
+        monitoring_interval=args.interval,
+    )
+
+    # Read back. `GE_n`'s exact meaning is undocumented, so the one thing that
+    # can be proven immediately is that the value persisted -- which is worth
+    # proving, because a silently ignored setting looks identical to a working
+    # one until the alerts keep arriving.
+    changes = []
+    for monitoring_id in args.ids:
+        after = graphql.get_watch_property(token, monitoring_id)
+        was = before.get(monitoring_id, {}).get("change_notification_level")
+        now = after.get("change_notification_level")
+        changes.append({"id": monitoring_id, "tool": after.get("tool"),
+                        "level_before": was, "level_after": now,
+                        "applied": (args.level is None) or (now == args.level)})
+
+    result = {"requested_level": args.level, "requested_interval": args.interval,
+              "changes": changes,
+              "applied": sum(1 for c in changes if c["applied"])}
+
+    def render(data: dict[str, Any]) -> None:
+        print(f"{data['applied']} of {len(data['changes'])} monitor(s) confirmed by "
+              f"read-back:\n")
+        for change in data["changes"]:
+            mark = "ok " if change["applied"] else "NOT APPLIED"
+            print(f"  [{mark}] {change['id']}  {change['tool']}  "
+                  f"{change['level_before']} -> {change['level_after']}")
+        if data["requested_level"]:
+            print("\n  The setting persisted. Whether it actually suppresses smaller "
+                  "changes is undocumented and takes days of observation to confirm.")
+
+    _emit(result, args.json, render)
+    return EXIT_OK if result["applied"] == len(changes) else EXIT_FAILURE
+
+
+# --------------------------------------------------------------------------
 # Parser
 # --------------------------------------------------------------------------
 
@@ -626,6 +824,39 @@ def build_parser() -> argparse.ArgumentParser:
         "levels", help="notification levels valid for each tool"
     ).set_defaults(func=cmd_levels)
 
+    show = watch_sub.add_parser(
+        "show", help="one monitor's real configuration (GraphQL; needs `auth login`)")
+    show.add_argument("monitoring_id", type=int)
+    show.set_defaults(func=cmd_watch_show)
+
+    delete = watch_sub.add_parser(
+        "delete", help="permanently delete monitors (GraphQL; needs `auth login`)")
+    delete.add_argument("ids", nargs="+", type=int)
+    delete.add_argument("--yes", action="store_true",
+                        help="required: deletion is irreversible and has no trash")
+    delete.set_defaults(func=cmd_watch_delete)
+
+    retune = watch_sub.add_parser(
+        "retune", help="change alert threshold or interval (GraphQL; needs `auth login`)")
+    retune.add_argument("ids", nargs="+", type=int)
+    retune.add_argument("--level", help="change_notification_level, e.g. GE_5 "
+                                        "(see `hexact watch levels`)")
+    retune.add_argument("--interval", choices=hexowatch.INTERVALS)
+    retune.set_defaults(func=cmd_watch_retune)
+
+    auth_parser = subparsers.add_parser(
+        "auth", help="session tokens for the GraphQL gateway (delete/update)")
+    auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
+
+    auth_login = auth_sub.add_parser(
+        "login", help="prompt for a password and store a refresh token")
+    auth_login.add_argument("--email", required=True)
+    auth_login.set_defaults(func=cmd_auth_login)
+
+    auth_sub.add_parser(
+        "status", help="check whether the stored token is accepted"
+    ).set_defaults(func=cmd_auth_status)
+
     matic = subparsers.add_parser("matic", help="Hexomatic: scraping and workflows")
     matic_sub = matic.add_subparsers(dest="matic_command", required=True)
 
@@ -673,6 +904,15 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except CredentialError as exc:
         print(f"Credential error: {redact(str(exc))}", file=sys.stderr)
+        return EXIT_FAILURE
+    except auth.LoginError as exc:
+        print(f"Login failed: {redact(str(exc))}", file=sys.stderr)
+        return EXIT_FAILURE
+    except graphql.AuthError as exc:
+        # Ahead of HexactAPIError, which it subclasses, so the remedy stays
+        # specific: an expired session token is not a generic API failure.
+        print(f"Not authenticated: {exc}\nRun: hexact auth login --email <you>",
+              file=sys.stderr)
         return EXIT_FAILURE
     except HexactAPIError as exc:
         print(f"API error: {exc}", file=sys.stderr)

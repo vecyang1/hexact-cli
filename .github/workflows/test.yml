@@ -29,6 +29,15 @@ jobs:
         # because a real key happened to be in the environment.
         run: python -m unittest discover -s tests -v
 
+      - name: Prove the tests can fail
+        # A green suite is not evidence until you have watched it go red. This
+        # breaks each guarantee on purpose and fails if any mutation survives.
+        # Without it the harness would be a file nobody runs, which is prose
+        # with extra confidence. Run on one version only -- it is the same
+        # source under test, and it costs ~10 suite runs.
+        if: matrix.python-version == '3.12'
+        run: python3 tests/mutation_check.py
+
       - name: Assert the suite is not empty
         # An exit code of 0 over zero tests is indistinguishable from success.
         # Read the count, not the status.

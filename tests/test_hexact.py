@@ -15,6 +15,7 @@ import http.client
 import io
 import json
 import os
+import stat
 import unittest
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -25,12 +26,13 @@ from unittest import mock
 _MANAGED_VARS = (
     "HEXOWATCH_API_KEY", "HEXOMATIC_API_KEY",
     "HEXOWATCH_OP_REF", "HEXOMATIC_OP_REF",
+    "HEXOWATCH_REFRESH_TOKEN", "HEXOWATCH_REFRESH_OP_REF",
     "HEXACT_OP_CMD", "HEXACT_HOME",
 )
 for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
 
-from hexact import cli, config, hexomatic, hexowatch  # noqa: E402
+from hexact import auth, cli, config, graphql, hexomatic, hexowatch  # noqa: E402
 from hexact.cli import (  # noqa: E402
     _is_paused, _normalise_address, _parse_timestamp, _rows, _state_label,
     main, parse_since, resolve_tool_from_payload,
@@ -498,3 +500,162 @@ class TestParseSince(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGraphQLNullIsAuthFailureNotEmptyData(unittest.TestCase):
+    """The most dangerous response this API can send is a successful-looking null.
+
+    Verified against the live gateway on 2026-08-13: no token, a deliberately
+    bogus token, and a valid REST API key all produce
+    ``{"data":{"Watch":{"getUserWatchPropertiesStatistics":null}}}`` with HTTP
+    200. Nothing in the response distinguishes those from an account that
+    genuinely has no monitors. Reading null as "empty" would report a healthy,
+    empty account to someone whose token had merely expired.
+    """
+
+    def test_null_namespace_raises_auth_error(self):
+        with self.assertRaises(graphql.AuthError):
+            graphql.unwrap({"Watch": None}, "Watch", "getWatchProperty")
+
+    def test_null_field_raises_auth_error(self):
+        with self.assertRaises(graphql.AuthError):
+            graphql.unwrap({"Watch": {"getWatchProperty": None}},
+                           "Watch", "getWatchProperty")
+
+    def test_empty_list_is_data_not_an_auth_failure(self):
+        # The gateway returns [] for a genuinely empty collection, so failing
+        # closed on null costs nothing legitimate.
+        self.assertEqual(
+            graphql.unwrap({"Watch": {"getWatchProperties": []}},
+                           "Watch", "getWatchProperties"),
+            [],
+        )
+
+    def test_auth_error_is_catchable_as_an_api_error(self):
+        self.assertTrue(issubclass(graphql.AuthError, HexactAPIError))
+
+
+class TestMutationAllowlistIsEnforcedBeforeTheNetwork(unittest.TestCase):
+    """The containment boundary for a credential far broader than the API key.
+
+    A refresh token reaches the whole account, including billing. The allowlist
+    is only worth anything if it is checked before a request is built, so these
+    assert that no transport is reached at all.
+    """
+
+    def _no_network(self):
+        return mock.patch.object(
+            graphql, "execute",
+            side_effect=AssertionError("a forbidden mutation reached the transport"))
+
+    def test_billing_namespace_is_refused(self):
+        with self._no_network():
+            with self.assertRaises(HexactAPIError) as caught:
+                graphql.mutate("HexometerUserSettingsOpts.updateHexometerPackage",
+                               {}, token="t")
+        self.assertIn("forbidden namespace", str(caught.exception))
+
+    def test_unlisted_watch_mutation_is_refused(self):
+        # Real, and destructive in a different way: it would create monitors.
+        with self._no_network():
+            with self.assertRaises(HexactAPIError):
+                graphql.mutate("WatchOps.createWatchPropertyBulk", {}, token="t")
+
+    def test_the_four_operations_we_rely_on_are_listed(self):
+        # Pins the vendor's undocumented, unversioned names. A silent rename
+        # should fail here rather than quietly return nothing at runtime.
+        self.assertEqual(graphql.MUTATION_ALLOWLIST, frozenset({
+            "WatchOps.deleteWatchProperty",
+            "WatchOps.deleteWatchProperties",
+            "WatchOps.updateWatchProperty",
+            "WatchOps.updateWatchProperties",
+        }))
+
+    def test_allowlisted_mutation_sends_values_as_variables(self):
+        """Arguments must not be interpolated into the query document."""
+        seen = {}
+
+        def capture(query, variables=None, **kwargs):
+            seen["query"], seen["variables"] = query, variables
+            return {"WatchOps": {"deleteWatchProperties": {"error": False}}}
+
+        with mock.patch.object(graphql, "execute", side_effect=capture):
+            graphql.delete_monitors("tok", [337094])
+        self.assertEqual(seen["variables"], {"watch_properties_ids": [337094]})
+        self.assertNotIn("337094", seen["query"])
+
+
+class TestDeleteRefusesWithoutConfirmation(unittest.TestCase):
+    def test_no_yes_means_no_request_and_no_token_lookup(self):
+        """Refusal must precede the network, not follow a wasted round trip.
+
+        An earlier version minted an access token first, so `delete` without
+        --yes failed with a credential error instead of the guard message --
+        the guard was real but unreachable without a working login.
+        """
+        with mock.patch.object(cli.auth, "access_token",
+                               side_effect=AssertionError("token was resolved")), \
+             mock.patch.object(cli.graphql, "execute",
+                               side_effect=AssertionError("network was touched")):
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                code = main(["watch", "delete", "337094"])
+        self.assertEqual(code, 2)
+        self.assertIn("--yes", buf.getvalue())
+
+
+class TestAuthStatusDistinguishesFailureModes(unittest.TestCase):
+    """`unknown` is a real verdict and must not collapse into `rejected`.
+
+    A network failure is not evidence about a credential. Reporting it as one
+    is how a perfectly good token gets rotated -- the shape already recorded in
+    memory as "auth failure is not a licence verdict".
+    """
+
+    def test_unreachable_gateway_is_unknown_not_rejected(self):
+        with mock.patch.object(auth, "resolve_key", return_value="refresh"), \
+             mock.patch.object(auth, "access_token",
+                               side_effect=HexactAPIError("Could not reach the gateway")):
+            verdict, _ = auth.status()
+        self.assertEqual(verdict, "unknown")
+
+    def test_refused_token_is_rejected(self):
+        with mock.patch.object(auth, "resolve_key", return_value="refresh"), \
+             mock.patch.object(auth, "access_token",
+                               side_effect=graphql.AuthError("bad token")):
+            verdict, _ = auth.status()
+        self.assertEqual(verdict, "rejected")
+
+    def test_missing_credential_is_missing_not_rejected(self):
+        with mock.patch.object(auth, "resolve_key",
+                               side_effect=config.CredentialError("none stored")):
+            verdict, _ = auth.status()
+        self.assertEqual(verdict, "missing")
+
+    def test_probe_answering_unauthenticated_is_rejected(self):
+        # The live shape: HTTP 200, no GraphQL error, refusal inside the envelope.
+        payload = {"WatchOps": {"updateWatchProperty": {
+            "error": True, "message": "You should be authenticated to perform this action!"}}}
+        with mock.patch.object(auth, "resolve_key", return_value="refresh"), \
+             mock.patch.object(auth, "access_token", return_value="access"), \
+             mock.patch.object(auth.graphql, "execute", return_value=payload):
+            verdict, _ = auth.status()
+        self.assertEqual(verdict, "rejected")
+
+
+class TestLoginNeverContinuesOnAnEmptyToken(unittest.TestCase):
+    def test_success_envelope_without_a_token_is_a_failure(self):
+        payload = {"UserOps": {"authRefreshToken": {"error": False, "token": None}}}
+        with mock.patch.object(graphql, "execute", return_value=payload):
+            with self.assertRaises(auth.LoginError):
+                auth.login("a@b.com", "pw")
+
+    def test_stored_token_file_is_owner_only(self):
+        with TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HEXACT_HOME": tmp}):
+                path = auth.store_refresh_token("s3cret-refresh-token")
+            mode = path.stat().st_mode
+            self.assertFalse(mode & (stat.S_IRWXG | stat.S_IRWXO),
+                             "credentials file must not be group- or world-readable")
+            self.assertIn("HEXOWATCH_REFRESH_TOKEN=s3cret-refresh-token",
+                          path.read_text(encoding="utf-8"))

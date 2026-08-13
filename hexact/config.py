@@ -32,15 +32,28 @@ HEXOWATCH = "hexowatch"
 HEXOMATIC = "hexomatic"
 HEXOMETER = "hexometer"
 
+# Not an API key. The GraphQL gateway refuses API keys outright (measured five
+# ways), so delete and update need a session credential instead. It resolves
+# through the same ladder because the ladder is about *where secrets live*, not
+# about what they authenticate.
+#
+# Worth knowing before storing one: this credential is broader than the API
+# keys above. An API key reaches the six documented REST endpoints; a refresh
+# token reaches the whole account. `hexact.graphql.MUTATION_ALLOWLIST` is the
+# mitigation, and it is enforced in code rather than by convention.
+HEXOWATCH_SESSION = "hexowatch_session"
+
 _ENV_VARS = {
     HEXOWATCH: "HEXOWATCH_API_KEY",
     HEXOMATIC: "HEXOMATIC_API_KEY",
     HEXOMETER: "HEXOMETER_API_KEY",
+    HEXOWATCH_SESSION: "HEXOWATCH_REFRESH_TOKEN",
 }
 _OP_REF_VARS = {
     HEXOWATCH: "HEXOWATCH_OP_REF",
     HEXOMATIC: "HEXOMATIC_OP_REF",
     HEXOMETER: "HEXOMETER_OP_REF",
+    HEXOWATCH_SESSION: "HEXOWATCH_REFRESH_OP_REF",
 }
 
 # `op read` blocks on a biometric prompt when it has to unlock interactively.
@@ -149,6 +162,14 @@ def resolve_key(service: str) -> str:
         key = source(service)
         if key:
             return key
+
+    if service == HEXOWATCH_SESSION:
+        raise CredentialError(
+            "No Hexowatch session token found. Delete and update are GraphQL-only "
+            "and the REST API key does not authenticate there.\n"
+            "  Run: hexact auth login\n"
+            f"  Or set {_OP_REF_VARS[service]}='op://Vault/Item/field'"
+        )
 
     raise CredentialError(
         f"No API key found for {service}. Set one of:\n"
