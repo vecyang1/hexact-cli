@@ -1,0 +1,28 @@
+# Never commit credentials. The repo carries pointers only.
+.env
+.env.local
+*.env
+!.env.example
+credentials*
+*.key
+*.pem
+
+# Local working notes, not part of the public package.
+findings.md
+task_plan.md
+progress.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
