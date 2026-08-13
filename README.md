@@ -76,6 +76,9 @@ Get the keys from the **API/Webhook** section of each dashboard's settings
 | `channels` | Account notification channels and their IDs † |
 | `mute <ids…>` | Stop an **existing** monitor notifying, without pausing it † |
 | `unmute <ids…> --channel ID` | Attach channels back † |
+| `settings` | Account-level email recipients + webhooks † |
+| `email --off` / `--on` | Account-wide notification email switch † |
+| `webhook set URL` / `show` / `clear ID` | Account-level webhook, fires for every monitor † |
 | `delete <ids…> --yes` | **Permanently delete** monitors † |
 | `retune <ids…> --level GE_5` | Change alert threshold or interval † |
 
@@ -117,8 +120,9 @@ memory only.
 **This credential is broader than the API keys.** A REST key reaches six
 documented endpoints; a refresh token reaches the whole account, including
 billing. Two mitigations, both in code rather than convention:
-`graphql.MUTATION_ALLOWLIST` permits exactly four Watch mutations and is checked
-before a request is built, and `graphql.FORBIDDEN_NAMESPACES` makes account and
+`graphql.MUTATION_ALLOWLIST` permits exactly ten mutations — Watch, watch
+integrations, and account notification settings — and is checked before a
+request is built, and `graphql.FORBIDDEN_NAMESPACES` makes account and
 billing operations unreachable. `delete` additionally refuses without `--yes`,
 before touching the network.
 
@@ -153,11 +157,15 @@ your own schedule.
 
 Two caveats worth knowing before relying on this:
 
-- Hexowatch also supports an **account-level webhook** set in dashboard
-  settings that fires for *every* monitor. It is not reachable through the API,
-  so `--silent` cannot disable it.
-- Whether the account's default email integration still applies when
-  `notification_integrations` is empty is **not documented**.
+- Hexowatch also supports an **account-level webhook** that fires for *every*
+  monitor. This was previously recorded here as dashboard-only and not
+  API-reachable. That was wrong: it is `UserWatchSettingsOps.subscribeWebhook`
+  on the gateway, and `hexact watch webhook set URL` drives it.
+- Whether the account's default email still applies when
+  `notification_integrations` is empty is **not documented**. There is now a
+  blunter lever that does not depend on the answer —
+  `hexact watch email --off` (`UserWatchSettingsOps.update(emailEnabled:)`)
+  switches notification email off account-wide.
 
 ### Quietening monitors that already exist
 

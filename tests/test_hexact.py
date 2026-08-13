@@ -580,6 +580,9 @@ class TestMutationAllowlistIsEnforcedBeforeTheNetwork(unittest.TestCase):
             "WatchIntegrationOps.updateWatchPropertyIntegrations",
             "WatchIntegrationOps.deleteWatchPropertyIntegration",
             "WatchIntegrationOps.deleteWatchIntegration",
+            "UserWatchSettingsOps.update",
+            "UserWatchSettingsOps.subscribeWebhook",
+            "UserWatchSettingsOps.unsubscribeWebhook",
         }))
 
     def test_no_billing_admin_or_user_mutation_ever_enters_the_allowlist(self):

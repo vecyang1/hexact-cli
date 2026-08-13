@@ -61,6 +61,14 @@ MUTATION_ALLOWLIST = frozenset({
     "WatchIntegrationOps.updateWatchPropertyIntegrations",
     "WatchIntegrationOps.deleteWatchPropertyIntegration",
     "WatchIntegrationOps.deleteWatchIntegration",
+    # Account-level notification settings. `docs/API.md` recorded the
+    # account-level webhook as "dashboard-only and not API-reachable"; it is
+    # reachable, here, and `update(emailEnabled:)` is the switch that turns off
+    # notification email for the whole account -- the thing 48 per-monitor
+    # mutes could only approximate.
+    "UserWatchSettingsOps.update",
+    "UserWatchSettingsOps.subscribeWebhook",
+    "UserWatchSettingsOps.unsubscribeWebhook",
 })
 
 # Namespaces that must never be reachable, listed explicitly so the intent
@@ -288,6 +296,17 @@ query {
 }
 """
 
+WATCH_SETTINGS_QUERY = """
+query {
+  UserWatchSettings {
+    get {
+      emails { email enabled verified }
+      webhooks { subscriptionId type }
+    }
+  }
+}
+"""
+
 STATISTICS_QUERY = """
 query {
   Watch {
@@ -318,6 +337,54 @@ def get_user_integrations(token: str) -> Any:
     """Every notification channel on the account, with its id and type."""
     data = execute(USER_INTEGRATIONS_QUERY, token=token)
     return unwrap(data, "WatchIntegration", "getUserIntegrations")
+
+
+def get_watch_settings(token: str) -> Any:
+    """Account-level notification settings: email recipients and webhooks."""
+    data = execute(WATCH_SETTINGS_QUERY, token=token)
+    return unwrap(data, "UserWatchSettings", "get")
+
+
+def set_email_notifications(token: str, enabled: bool) -> dict[str, Any]:
+    """The account-wide notification-email switch.
+
+    Broader than `set_monitor_integrations`, and the difference matters. Muting
+    a monitor detaches *its* channels; this turns off notification email for
+    the whole account in one call, including the default delivery that fires
+    even for monitors with no channel attached. That default is what made
+    "does an empty channel list also stop the email?" unanswerable -- the
+    question had no lever until this mutation.
+    """
+    return mutate(
+        "UserWatchSettingsOps.update",
+        {"emailEnabled": ("Boolean", bool(enabled))},
+        token=token,
+        selection="error message",
+    )
+
+
+def set_account_webhook(token: str, webhook_url: str) -> dict[str, Any]:
+    """Subscribe an account-level webhook -- fires for every monitor.
+
+    Distinct from `WatchOps.subscribeWebhook`, which takes a
+    `watch_property_id` and is per-monitor. This one takes only a URL.
+    """
+    return mutate(
+        "UserWatchSettingsOps.subscribeWebhook",
+        {"webhookUrl": ("String", webhook_url)},
+        token=token,
+        selection="error message",
+    )
+
+
+def remove_account_webhook(token: str, subscription_id: str) -> dict[str, Any]:
+    """Unsubscribe an account-level webhook by its subscriptionId."""
+    return mutate(
+        "UserWatchSettingsOps.unsubscribeWebhook",
+        {"subscriptionId": ("String", subscription_id)},
+        token=token,
+        selection="error message",
+    )
 
 
 def get_statistics(token: str) -> dict[str, Any]:

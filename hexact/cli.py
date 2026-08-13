@@ -687,6 +687,94 @@ def cmd_watch_channels(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_watch_settings(args: argparse.Namespace) -> int:
+    """Account-level notification settings — email recipients and webhooks."""
+    token = auth.access_token()
+    settings = graphql.get_watch_settings(token) or {}
+
+    def render(data: dict[str, Any]) -> None:
+        emails = data.get("emails") or []
+        print(f"Email recipients ({len(emails)}):")
+        for row in emails:
+            state = "on " if row.get("enabled") else "OFF"
+            verified = "" if row.get("verified") else "  (unverified)"
+            print(f"  [{state}] {row.get('email')}{verified}")
+        hooks = data.get("webhooks") or []
+        print(f"\nAccount webhooks ({len(hooks)}):")
+        for row in hooks:
+            print(f"  {row.get('subscriptionId')}  type={row.get('type')}")
+        if not hooks:
+            print("  none — `hexact watch webhook set URL` to add one")
+
+    _emit(settings, args.json, render)
+    return EXIT_OK
+
+
+def cmd_watch_email(args: argparse.Namespace) -> int:
+    """Turn account-wide notification email on or off.
+
+    The blunt instrument, and often the right one. `watch mute` detaches
+    channels from one monitor; this stops notification email for the whole
+    account in a single call, including the default delivery that fires for
+    monitors with no channel attached at all.
+    """
+    token = auth.access_token()
+    graphql.set_email_notifications(token, args.enable)
+
+    # Read back against the account settings, not the mutation envelope.
+    settings = graphql.get_watch_settings(token) or {}
+    emails = settings.get("emails") or []
+    still_on = [e.get("email") for e in emails if e.get("enabled")]
+    payload = {"requested": "on" if args.enable else "off",
+               "recipients_enabled": still_on, "recipients": emails}
+
+    def render(data: dict[str, Any]) -> None:
+        if args.enable:
+            print(f"Notification email ON. Enabled recipients: "
+                  f"{', '.join(data['recipients_enabled']) or 'none'}")
+            return
+        if data["recipients_enabled"]:
+            print("Requested OFF, but these recipients still read as enabled:")
+            for address in data["recipients_enabled"]:
+                print(f"  {address}")
+            print("\nThe account switch and the per-recipient flags are separate "
+                  "settings; this reports what the server says, not what was asked.")
+        else:
+            print("Notification email OFF for the whole account. "
+                  "Monitors keep checking and keep recording changes.")
+
+    _emit(payload, args.json, render)
+    if args.enable:
+        return EXIT_OK
+    return EXIT_OK if not still_on else EXIT_FAILURE
+
+
+def cmd_watch_webhook(args: argparse.Namespace) -> int:
+    """Manage the account-level webhook — fires for every monitor.
+
+    With one of these pointed at an endpoint you control, every change arrives
+    as structured JSON and email becomes optional rather than the only channel.
+    """
+    token = auth.access_token()
+    if args.webhook_action == "set":
+        graphql.set_account_webhook(token, args.url)
+    elif args.webhook_action == "clear":
+        graphql.remove_account_webhook(token, args.subscription_id)
+
+    settings = graphql.get_watch_settings(token) or {}
+    hooks = settings.get("webhooks") or []
+
+    def render(data: dict[str, Any]) -> None:
+        print(f"Account webhooks ({len(data['webhooks'])}):")
+        for row in data["webhooks"]:
+            print(f"  {row.get('subscriptionId')}  type={row.get('type')}")
+        if not data["webhooks"]:
+            print("  none")
+
+    _emit({"webhooks": hooks}, args.json, render)
+    return EXIT_OK
+
+
 def cmd_watch_mute(args: argparse.Namespace) -> int:
     """Silence monitors that already exist, or restore their channels.
 
@@ -1009,6 +1097,30 @@ def build_parser() -> argparse.ArgumentParser:
         "channels",
         help="list the account's notification channels (GraphQL; needs `auth login`)"
     ).set_defaults(func=cmd_watch_channels)
+
+    watch_sub.add_parser(
+        "settings", help="account-level notification settings (email + webhooks)"
+    ).set_defaults(func=cmd_watch_settings)
+
+    email = watch_sub.add_parser(
+        "email", help="turn account-wide notification EMAIL on or off")
+    email_state = email.add_mutually_exclusive_group(required=True)
+    email_state.add_argument("--off", dest="enable", action="store_false",
+                             help="stop all notification email for the account")
+    email_state.add_argument("--on", dest="enable", action="store_true",
+                             help="resume notification email")
+    email.set_defaults(func=cmd_watch_email)
+
+    webhook = watch_sub.add_parser(
+        "webhook", help="account-level webhook — fires for every monitor")
+    webhook_sub = webhook.add_subparsers(dest="webhook_action", required=True)
+    webhook_sub.add_parser("show").set_defaults(func=cmd_watch_webhook)
+    webhook_set = webhook_sub.add_parser("set")
+    webhook_set.add_argument("url")
+    webhook_set.set_defaults(func=cmd_watch_webhook)
+    webhook_clear = webhook_sub.add_parser("clear")
+    webhook_clear.add_argument("subscription_id")
+    webhook_clear.set_defaults(func=cmd_watch_webhook)
 
     mute = watch_sub.add_parser(
         "mute",

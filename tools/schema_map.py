@@ -41,7 +41,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-USER_AGENT = "hexact-cli/0.3.0 (+https://github.com/vecyang1/hexact-cli)"
+USER_AGENT = "hexact-cli/0.4.0 (+https://github.com/vecyang1/hexact-cli)"
 HOSTS = {
     "hexowatch": "https://api.hexowatch.com/v2/ql",
     "hexomatic": "https://api.hexomatic.com/v2/ql",
