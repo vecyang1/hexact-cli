@@ -5,8 +5,8 @@
 Source: `https://api.hexowatch.com/v2/ql`. The vendor publishes no schema for this endpoint and Apollo introspection is disabled, so every name below was recovered from validator error messages.
 
 - **94 namespaces** (53 query, 41 mutation)
-- **342 fields** with recovered signatures
-- 8626 requests, **0 resolvers entered** (must be 0)
+- **342 fields**, **464 arguments**, 342 with a recovered return type
+- 40499 requests, **0 resolvers entered** (must be 0)
 
 ## How this was recovered, and why it is inert
 
@@ -41,325 +41,325 @@ The session token this gateway wants reaches the **whole account**, including bi
 
 ### `mutation WatchAlertOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `deleteWatchAlerts` | *none* |
-| `setAllWatchAlertsReadState` | *none* |
-| `setWatchAlertReadState` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `deleteWatchAlerts` | `BaseMutationResponse` | — | `watchAlertIds: [Int]` |
+| `setAllWatchAlertsReadState` | `BaseMutationResponse` | — | — |
+| `setWatchAlertReadState` | `BaseMutationResponse` | — | `monitoring_log_reference: String`, `watch_alert_ids: [Int]` |
 
 ### `mutation WatchIntegrationOps` — 11 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `addUserEmail` | *none* |
-| `addWatchPropertyIntegration` | `watch_property_id: Int!`, `watch_integration_id: Int!` |
-| `addWatchPropertyIntegrations` | `watch_property_id: Int!`, `watch_integration_ids: [Int]!` |
-| `createWatchTeamsIntegration` | *none* |
-| `deleteWatchIntegration` | `watch_integration_id: Int!` |
-| `deleteWatchPropertyIntegration` | `watch_property_id: Int!`, `watch_integration_id: Int!` |
-| `deleteWatchPropertyIntegrations` | `watch_property_id: Int!`, `watch_integration_ids: [Int]!` |
-| `updateUserEmail` | *none* |
-| `updateWatchIntegrationEmail` | *none* |
-| `updateWatchPropertyIntegrations` | `watch_property_id: Int!`, `watch_integration_ids: [Int]!` |
-| `updateWatchTeamsIntegration` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `addUserEmail` | `BaseMutationResponse` | — | `email: String`, `enabled: Boolean` |
+| `addWatchPropertyIntegration` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_integration_id: Int!` | — |
+| `addWatchPropertyIntegrations` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_integration_ids: [Int]!` | — |
+| `createWatchTeamsIntegration` | `BaseMutationResponse` | — | `webhookUrls: [String]` |
+| `deleteWatchIntegration` | `BaseMutationResponse` | `watch_integration_id: Int!` | — |
+| `deleteWatchPropertyIntegration` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_integration_id: Int!` | — |
+| `deleteWatchPropertyIntegrations` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_integration_ids: [Int]!` | — |
+| `updateUserEmail` | `BaseMutationResponse` | — | `emailEnabled: Boolean` |
+| `updateWatchIntegrationEmail` | `UpdateWatchIntegrationEmailResult` | — | `email: String`, `enable: Boolean`, `id: Int` |
+| `updateWatchPropertyIntegrations` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_integration_ids: [Int]!` | — |
+| `updateWatchTeamsIntegration` | `BasicResponse` | — | `data: MicrosoftTeamsData`, `integrationId: Int` |
 
 ### `mutation WatchOps` — 14 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminDelete` | `id: ID!` |
-| `createWatchProperty` | `address: String!`, `tool: String!`, `tool_settings: WatchToolSettingsMapping!`, `monitoring_interval: String!`, `pause_after_first_change_event: Boolean!` |
-| `createWatchPropertyBulk` | `address_list: [String]!`, `tool: String!`, `tool_settings: WatchToolSettingsMapping!`, `monitoring_interval: String!`, `pause_after_first_change_event: Boolean!` |
-| `deleteWatchProperties` | `watch_properties_ids: [Int]!` |
-| `deleteWatchProperty` | `watch_property_id: Int!` |
-| `duplicateWatchProperties` | `ids: [Int]!` |
-| `exportAll` | *none* |
-| `manualScanWatchProperties` | `watch_properties_ids: [Int]!` |
-| `manualScanWatchProperty` | `watch_property_id: Int!` |
-| `subscribeWebhook` | `webhookUrl: String!`, `watch_property_id: Int!` |
-| `unsubscribeWebhook` | `subscriptionId: String!`, `watch_property_id: Int!` |
-| `updateWatchProperties` | `watch_properties_ids: [Int]!` |
-| `updateWatchProperty` | *none* |
-| `updateWebhook` | `subscriptionId: String!`, `updateWebhook: String!`, `watch_property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminDelete` | `BaseMutationResponse` | `id: ID!` | — |
+| `createWatchProperty` | `BaseMutationResponse` | `address: String!`, `tool: String!`, `tool_settings: WatchToolSettingsMapping!`, `monitoring_interval: String!`, `pause_after_first_change_event: Boolean!` | `alert_notification_settings: WatchPropertyAlertNotificationSettingsInput`, `change_notification_level: String`, `name: String`, `user_agent: Boolean`, `watch_integration_ids: [Int]`, `webhook: String` |
+| `createWatchPropertyBulk` | `CreateWatchPropertyBulkResult` | `address_list: [String]!`, `tool: String!`, `tool_settings: WatchToolSettingsMapping!`, `monitoring_interval: String!`, `pause_after_first_change_event: Boolean!` | `alert_notification_settings: WatchPropertyAlertNotificationSettingsInput`, `change_notification_level: String`, `user_agent: Boolean`, `watch_integration_ids: [Int]`, `webhook: String` |
+| `deleteWatchProperties` | `BaseMutationResponse` | `watch_properties_ids: [Int]!` | — |
+| `deleteWatchProperty` | `BaseMutationResponse` | `watch_property_id: Int!` | — |
+| `duplicateWatchProperties` | `DuplicateWatchPropertiesResult` | `ids: [Int]!` | — |
+| `exportAll` | `ExportAllType` | — | `settings: ExportAllInput` |
+| `manualScanWatchProperties` | `ManualScanWatchPropertiesMutationResultType` | `watch_properties_ids: [Int]!` | — |
+| `manualScanWatchProperty` | `ManualScanWatchPropertyMutationResultType` | `watch_property_id: Int!` | — |
+| `subscribeWebhook` | `BaseMutationResponse` | `webhookUrl: String!`, `watch_property_id: Int!` | — |
+| `unsubscribeWebhook` | `BaseMutationResponse` | `subscriptionId: String!`, `watch_property_id: Int!` | — |
+| `updateWatchProperties` | `BaseMutationResponse` | `watch_properties_ids: [Int]!` | `active: Boolean`, `alert_notification_settings: WatchPropertyAlertNotificationSettingsPartialInput`, `change_notification_level: String`, `monitoring_interval: String`, `pause_after_first_change_event: Boolean`, `user_agent: Boolean`, `watch_integration_ids: [Int]` |
+| `updateWatchProperty` | `BaseMutationResponse` | — | `active: Boolean`, `alert_notification_settings: WatchPropertyAlertNotificationSettingsInput`, `change_notification_level: String`, `monitoring_interval: String`, `name: String`, `pause_after_first_change_event: Boolean`, `user_agent: Boolean`, `watch_property_id: Int` |
+| `updateWebhook` | `BaseMutationResponse` | `subscriptionId: String!`, `updateWebhook: String!`, `watch_property_id: Int!` | — |
 
 ### `mutation WatchTagOps` — 6 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `addWatchPropertyTag` | `watch_property_id: Int!`, `watch_tag_id: Int!` |
-| `createUserWatchTag` | `name: String!`, `color: String!` |
-| `deleteUserWatchTag` | `watch_tag_id: Int!` |
-| `deleteWatchPropertyTag` | `watch_property_id: Int!`, `watch_tag_id: Int!` |
-| `updateUserWatchTag` | `watch_tag_id: Int!`, `name: String!`, `color: String!` |
-| `updateWatchPropertyTags` | `watch_property_id: Int!`, `tags: [Int]!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `addWatchPropertyTag` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_tag_id: Int!` | — |
+| `createUserWatchTag` | `CreateUserWatchTagMutationResult` | `name: String!`, `color: String!` | — |
+| `deleteUserWatchTag` | `BaseMutationResponse` | `watch_tag_id: Int!` | — |
+| `deleteWatchPropertyTag` | `BaseMutationResponse` | `watch_property_id: Int!`, `watch_tag_id: Int!` | — |
+| `updateUserWatchTag` | `BaseMutationResponse` | `watch_tag_id: Int!`, `name: String!`, `color: String!` | — |
+| `updateWatchPropertyTags` | `BaseMutationResponse` | `watch_property_id: Int!`, `tags: [Int]!` | — |
 
 ### `query Watch` — 13 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminGetMany` | *none* |
-| `checkToWatchProperty` | *none* |
-| `get` | `IDBase: String!` |
-| `getUserWatchProperties` | `page: Int!`, `limit: Int!` |
-| `getUserWatchPropertiesStatistics` | *none* |
-| `getWatchProperties` | *none* |
-| `getWatchProperty` | `watch_property_id: Int!` |
-| `getWatchPropertyById` | *none* |
-| `getWatchPropertyPrevNextIds` | *none* |
-| `getWatchPropertyPrevNextPassId` | *none* |
-| `getWatchPropertyScanLogs` | `watch_property_id: Int!`, `page: Int!`, `limit: Int!` |
-| `getWatchPropertyScanResult` | `scan_id: String!` |
-| `subscriptionsChart` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminGetMany` | `WatchProperties` | — | `active: Boolean`, `input: FilterArgsType`, `orderBy: String`, `orderByASC: Boolean`, `tool: String` |
+| `checkToWatchProperty` | `CheckToWatchPropertyMutationResult` | — | `address: String`, `tool: String` |
+| `get` | `WatchPropertyGetType` | `IDBase: String!` | — |
+| `getUserWatchProperties` | `GetUserWatchPropertiesMutationResult` | `page: Int!`, `limit: Int!` | `active: Boolean`, `searchQuery: String`, `sortBy: String`, `sortDir: String`, `tags: [Int]`, `tool: String` |
+| `getUserWatchPropertiesStatistics` | `GetUserWatchPropertiesStatisticsResult` | — | — |
+| `getWatchProperties` | `GetWatchPropertiesResult` | — | `settings: GetWatchPropertiesSettings` |
+| `getWatchProperty` | `WatchPropertyType` | `watch_property_id: Int!` | — |
+| `getWatchPropertyById` | `GetWatchPropertyByIdResult` | — | `id: Int` |
+| `getWatchPropertyPrevNextIds` | `WatchPropertyPrevNextIdResult` | — | `active: Boolean`, `limit: Int`, `page: Int`, `searchQuery: String`, `sortBy: String`, `sortDir: String`, `tool: String`, `watchPropertyId: Int` |
+| `getWatchPropertyPrevNextPassId` | `GetWatchPropertyPrevNextPassIdResult` | — | `settings: GetWatchPropertyPrevNextPassIdSettings` |
+| `getWatchPropertyScanLogs` | `GetWatchPropertyScanLogsMutationResult` | `watch_property_id: Int!`, `page: Int!`, `limit: Int!` | `filter: GetWatchPropertyScanLogsFilterInput`, `from: String`, `to: String` |
+| `getWatchPropertyScanResult` | `GetWatchPropertyScanResultMutaionResult` | `scan_id: String!` | — |
+| `subscriptionsChart` | `[SubscriptionsChartDataType]` | — | — |
 
 ### `query WatchAlert` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | `monitoringLog: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `WatchAlertType` | `monitoringLog: String!` | — |
 
 ### `query WatchIntegration` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getUserIntegrations` | *none* |
-| `getWatchPropertyIntegrations` | `watch_property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getUserIntegrations` | `UserWatchIntegrationGetResult` | — | — |
+| `getWatchPropertyIntegrations` | `UserWatchIntegrationGetResult` | `watch_property_id: Int!` | — |
 
 ### `query WatchNotification` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `watchNotificationTypeFields` | *none* |
-| `watchNotificationsChart` | *none* |
-| `watchNotificationsPieChart` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `watchNotificationTypeFields` | `[WatchNotificationTypeField]` | — | — |
+| `watchNotificationsChart` | `[WatchNotificationsChartDataType]` | — | — |
+| `watchNotificationsPieChart` | `[WatchNotificationsPiechartDataType]` | — | `from: String`, `to: String` |
 
 ### `query WatchTag` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getUserWatchTags` | *none* |
-| `getWatchPropertyTags` | `watch_property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getUserWatchTags` | `GetUserWatchTagsMutationResult` | — | — |
+| `getWatchPropertyTags` | `GetWatchPropertyTagsMutationResult` | `watch_property_id: Int!` | — |
 
 ## Hexomatic
 
 ### `mutation HexomaticAdminOps` — 14 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createAutomation` | *none* |
-| `createAutomationCategory` | *none* |
-| `createAutomationType` | *none* |
-| `createAutomationUnit` | *none* |
-| `deleteAutomation` | *none* |
-| `deleteAutomationCategory` | *none* |
-| `deleteAutomationType` | *none* |
-| `deleteAutomationUnit` | *none* |
-| `updateAutomation` | *none* |
-| `updateAutomationCategory` | *none* |
-| `updateAutomationType` | *none* |
-| `updateAutomationUnit` | *none* |
-| `updateAutomationUnitPrice` | *none* |
-| `updateHexomaticPackageAdmin` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createAutomation` | `CreateAutomationResult` | — | `settings: CreateAutomationInput` |
+| `createAutomationCategory` | `CreateAutomationCategoryResult` | — | `settings: CreateAutomationCategoryInput` |
+| `createAutomationType` | `CreateAutomationTypeResult` | — | `settings: CreateAutomationTypeInput` |
+| `createAutomationUnit` | `CreateAutomationUnitResult` | — | `settings: CreateAutomationUnitInput` |
+| `deleteAutomation` | `DeleteAutomationResult` | — | `settings: DeleteAutomationInput` |
+| `deleteAutomationCategory` | `DeleteAutomationCategoryResult` | — | `settings: DeleteAutomationCategoryInput` |
+| `deleteAutomationType` | `DeleteAutomationTypeResult` | — | `settings: DeleteAutomationTypeInput` |
+| `deleteAutomationUnit` | `DeleteAutomationUnitResult` | — | `settings: DeleteAutomationUnitInput` |
+| `updateAutomation` | `UpdateAutomationResult` | — | `settings: UpdateAutomationInput` |
+| `updateAutomationCategory` | `UpdateAutomationCategoryResult` | — | `settings: UpdateAutomationCategoryInput` |
+| `updateAutomationType` | `UpdateAutomationTypeResult` | — | `settings: UpdateAutomationTypeInput` |
+| `updateAutomationUnit` | `UpdateAutomationUnitResult` | — | `settings: UpdateAutomationUnitInput` |
+| `updateAutomationUnitPrice` | `UpdateAutomationUnitPriceAdminResult` | — | `settings: UpdateAutomationUnitPriceAdminInput` |
+| `updateHexomaticPackageAdmin` | `UpdateHexomaticPackageAdminResult` | — | `settings: UpdateHexomaticPackageAdminInput` |
 
 ### `mutation HexomaticAutomationOps` — fields UNKNOWN (not discovered)
 
 ### `mutation HexomaticPublicScrapingRecipeOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createPublicScrapingRecipe` | *none* |
-| `deletePublicScrapingRecipe` | *none* |
-| `updatePublicScrapingRecipe` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createPublicScrapingRecipe` | `CreatePublicScrapingRecipeResult` | — | `settings: CreatePublicScrapingRecipeInput` |
+| `deletePublicScrapingRecipe` | `DeletePublicScrapingRecipeResult` | — | `settings: DeletePublicScrapingRecipeInput` |
+| `updatePublicScrapingRecipe` | `UpdatePublicScrapingRecipeResult` | — | `settings: UpdatePublicScrapingRecipeInput` |
 
 ### `mutation HexomaticPublicWorkflowOps` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminDeletePublicWorkflow` | *none* |
-| `adminUpdatePublicWorkflow` | *none* |
-| `createNewPublicWorkflow` | *none* |
-| `deletePublicWorkflows` | *none* |
-| `updatePublicWorkflow` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminDeletePublicWorkflow` | `BaseMutationResponse` | — | `id: Int` |
+| `adminUpdatePublicWorkflow` | `BaseMutationResponse` | — | `settings: AdminUpdatePublicWorkflowInput` |
+| `createNewPublicWorkflow` | `CreateNewPublicWorkflowResult` | — | `settings: CreateNewPublicWorkflowInput` |
+| `deletePublicWorkflows` | `DeletePublicWorkflowResult` | — | `settings: DeletePublicWorkflowInput` |
+| `updatePublicWorkflow` | `updatePublicWorkflowResult` | — | `settings: updatePublicWorkflowInput` |
 
 ### `mutation HexomaticScrapingRecipeOps` — 6 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createScrapingRecipe` | *none* |
-| `deleteScrapingRecipe` | *none* |
-| `deleteScrapingRecipeBulk` | *none* |
-| `duplicateScrapingRecipe` | *none* |
-| `importSharedScrapingRecipe` | *none* |
-| `updateScrapingRecipe` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createScrapingRecipe` | `CreateScrapingRecipeResult` | — | `settings: CreateScrapingRecipeInput` |
+| `deleteScrapingRecipe` | `DeleteScrapingRecipeResult` | — | `settings: DeleteScrapingRecipeInput` |
+| `deleteScrapingRecipeBulk` | `DeleteScrapingRecipeBulkResult` | — | `settings: DeleteScrapingRecipeBulkInput` |
+| `duplicateScrapingRecipe` | `DuplicateScrapingRecipeResult` | — | `settings: DuplicateScrapingRecipe` |
+| `importSharedScrapingRecipe` | `ImportSharedScrapingRecipeResult` | — | `settings: ImportSharedScrapingRecipeInput` |
+| `updateScrapingRecipe` | `UpdateScrapingRecipeResult` | — | `settings: UpdateScrapingRecipeInput` |
 
 ### `mutation HexomaticTagOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createUserHexomaticTag` | *none* |
-| `deleteUserHexomaticTag` | *none* |
-| `updateUserHexomaticTag` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createUserHexomaticTag` | `CreateUserHexomaticTagResult` | — | `settings: CreateUserHexomaticTagInput` |
+| `deleteUserHexomaticTag` | `BaseResultType` | — | `settings: DeleteUserHexomaticTagInput` |
+| `updateUserHexomaticTag` | `BaseResultType` | — | `settings: UpdateUserHexomaticTagInput` |
 
 ### `mutation HexomaticUserOps` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `updateUserHexomaticPackage` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `updateUserHexomaticPackage` | `UpdateUserHexomaticPackageResult` | — | `settings: UpdateUserHexomaticPackageInput` |
 
 ### `mutation HexomaticWorkflowOps` — 11 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createNewWorkflow` | *none* |
-| `deleteWorkflows` | *none* |
-| `disableTriggerWorkflow` | *none* |
-| `duplicateWorkflow` | *none* |
-| `generateWorkflowShareLink` | *none* |
-| `ignoreSharedWorkflowUpdates` | *none* |
-| `importSharedWorkflow` | *none* |
-| `invalidateWorkflowShareLink` | *none* |
-| `updateInprogressWorkflow` | *none* |
-| `updateWorkflow` | *none* |
-| `updateWorkflowStateBulk` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createNewWorkflow` | `CreateNewWorkflowResult` | — | `settings: CreateNewWorkflowInput` |
+| `deleteWorkflows` | `DeleteWorkflowResult` | — | `settings: DeleteWorkflowInput` |
+| `disableTriggerWorkflow` | `UpdateWorkflowResult` | — | `settings: DisableTriggerWorkflow` |
+| `duplicateWorkflow` | `DuplicateWorkflowResult` | — | `settings: DuplicateWorkflowInput` |
+| `generateWorkflowShareLink` | `GenerateWorkflowShareLinkResult` | — | `settings: GenerateWorkflowShareLinkInput` |
+| `ignoreSharedWorkflowUpdates` | `IgnoreSharedWorkflowUpdatesResult` | — | `settings: IgnoreSharedWorkflowUpdatesInput` |
+| `importSharedWorkflow` | `ImportSharedWorkflowResult` | — | `settings: ImportSharedWorkflowInput` |
+| `invalidateWorkflowShareLink` | `InvalidateWorkflowShareLinkResult` | — | `settings: InvalidateWorkflowShareLinkInput` |
+| `updateInprogressWorkflow` | `UpdateInprogressWorkflowResult` | — | `settings: UpdateInprogressWorkflowInput` |
+| `updateWorkflow` | `UpdateWorkflowResult` | — | `settings: UpdateWorkflowInput` |
+| `updateWorkflowStateBulk` | `UpdateWorkflowStateBulkResult` | — | `settings: UpdateWorkflowStateBulkInput` |
 
 ### `mutation ScraperOps` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | `name: String!`, `address: String!`, `country: String!`, `active: Boolean!`, `monitoring_interval: String!` |
-| `delete` | `scraper_property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `ScraperCreateResponse` | `name: String!`, `address: String!`, `country: String!`, `active: Boolean!`, `monitoring_interval: String!` | `action_index: Int`, `actions: [ScraperAction]` |
+| `delete` | `ScraperScanResponse` | `scraper_property_id: Int!` | — |
 
 ### `query HexomaticAdmin` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getAutomationCategories` | *none* |
-| `getAutomationTypes` | *none* |
-| `getAutomationUnits` | *none* |
-| `getAutomations` | *none* |
-| `getAutomationsWithIO` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getAutomationCategories` | `GetAutomationCategoriesResult` | — | `settings: GetAutomationCategoriesInput` |
+| `getAutomationTypes` | `GetAutomationTypesResult` | — | `settings: GetAutomationTypesInput` |
+| `getAutomationUnits` | `GetAutomationUnitsResult` | — | `settings: GetAutomationUnitsInput` |
+| `getAutomations` | `GetAutomationsResult` | — | `settings: GetAutomationsInput` |
+| `getAutomationsWithIO` | `GetAutomationsWithIOResult` | — | `settings: GetAutomationsWithIOInput` |
 
 ### `query HexomaticAutomation` — 18 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getAutomation` | *none* |
-| `getAutomationCategories` | *none* |
-| `getAutomationCategoriesPublic` | *none* |
-| `getAutomationCreditTimeSeries` | *none* |
-| `getAutomationCreditUsage` | *none* |
-| `getAutomationCreditUsageInfo` | *none* |
-| `getAutomationNames` | *none* |
-| `getAutomationPremiumCreditTimeSeries` | *none* |
-| `getAutomationTypes` | *none* |
-| `getAutomationTypesPublic` | *none* |
-| `getAutomationUsageInfo` | *none* |
-| `getAutomations` | *none* |
-| `getAutomationsByIO` | *none* |
-| `getAutomationsByIds` | *none* |
-| `getAutomationsCategoriesOrTypesById` | *none* |
-| `getAutomationsChart` | *none* |
-| `getAutomationsPublic` | *none* |
-| `getAutomationsWithIO` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getAutomation` | `GetAutomationUserResult` | — | `settings: GetAutomationUserInput` |
+| `getAutomationCategories` | `GetAutomationCategoriesResult` | — | `settings: GetAutomationCategoriesInput` |
+| `getAutomationCategoriesPublic` | `GetAutomationCategoriesResult` | — | `settings: GetAutomationCategoriesInput` |
+| `getAutomationCreditTimeSeries` | `AutomationCreditTimeSeriesResult` | — | `settings: AutomationCreditTimeSeriesSettings` |
+| `getAutomationCreditUsage` | `GetAutomationCreditUsageResult` | — | `settings: AutomationCreditTimeSeriesSettings` |
+| `getAutomationCreditUsageInfo` | `AutomationCreditUsageInfoResult` | — | `settings: AutomationCreditUsageInfoSettings` |
+| `getAutomationNames` | `AutomationNameResult` | — | — |
+| `getAutomationPremiumCreditTimeSeries` | `AutomationCreditTimeSeriesResult` | — | `settings: AutomationCreditTimeSeriesSettings` |
+| `getAutomationTypes` | `GetAutomationTypesResult` | — | `settings: GetAutomationTypesInput` |
+| `getAutomationTypesPublic` | `GetAutomationTypesResult` | — | `settings: GetAutomationTypesInput` |
+| `getAutomationUsageInfo` | `AutomationUsageInfoResult` | — | `settings: AutomationUsageInput` |
+| `getAutomations` | `GetAutomationsUserResult` | — | `settings: GetAutomationsUserInput` |
+| `getAutomationsByIO` | `GetAutomationsByIOUserResult` | — | `settings: GetAutomationsByIOUserInput` |
+| `getAutomationsByIds` | `GetAutomationsByIdsResult` | — | `settings: GetAutomationsByIdsInput` |
+| `getAutomationsCategoriesOrTypesById` | `GetAutomationsCategoriesOrTypesByIdResult` | — | `settings: GetAutomationsCategoriesOrTypesByIdInput` |
+| `getAutomationsChart` | `[PiechartDataType]` | — | `from: String`, `to: String` |
+| `getAutomationsPublic` | `GetAutomationsUserResult` | — | `settings: GetAutomationsUserInput` |
+| `getAutomationsWithIO` | `GetAutomationsWithIOUserResult` | — | `settings: GetAutomationsWithIOUserInput` |
 
 ### `query HexomaticIntegrations` — 20 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createChatGptIntegration` | *none* |
-| `createEmail` | *none* |
-| `createKonnectzitIntegration` | *none* |
-| `createMicrosoftTeamsIntegration` | *none* |
-| `createPabblyIntegration` | *none* |
-| `createSQLConnection` | *none* |
-| `createWordPressIntegration` | *none* |
-| `deleteIntegration` | *none* |
-| `getAllIntegrations` | *none* |
-| `getChatGptIntegrations` | *none* |
-| `getSQLConnection` | *none* |
-| `getSQLConnections` | *none* |
-| `getWordPressCategories` | *none* |
-| `getWordPressConnection` | *none* |
-| `getWordPressConnections` | *none* |
-| `updateEmail` | *none* |
-| `updateIntegrationName` | *none* |
-| `updateMicrosoftTeamsIntegration` | *none* |
-| `updateSQLConnection` | *none* |
-| `updateWordPressConnection` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createChatGptIntegration` | `CreateChatGptIntegrationResult` | — | `settings: CreateChatGptIntegrationSettings` |
+| `createEmail` | `BasicResponse` | — | `email_info: [EmailInfoInput]` |
+| `createKonnectzitIntegration` | `BasicResponse` | — | `webhookUrl: String` |
+| `createMicrosoftTeamsIntegration` | `BaseMutationResponse` | — | `webhookUrls: [String]` |
+| `createPabblyIntegration` | `BasicResponse` | — | `webhookUrl: String` |
+| `createSQLConnection` | `CreateSQLConnectionType` | — | `settings: CreateSQLConnectionArgs` |
+| `createWordPressIntegration` | `CreateWordPressIntegrationType` | — | `settings: CreateWordPressIntegrationArgs` |
+| `deleteIntegration` | `BasicResponse` | — | `id: Int` |
+| `getAllIntegrations` | `AllIntegration` | — | `id: Int` |
+| `getChatGptIntegrations` | `GetChatGptIntegrationsResult` | — | — |
+| `getSQLConnection` | `GetSQLConnectionType` | — | `settings: GetSQLConnectionArgs` |
+| `getSQLConnections` | `GetSQLConnectionsType` | — | — |
+| `getWordPressCategories` | `GetWordPressCategoriesType` | — | `settings: GetWordPressCategoriesArgs` |
+| `getWordPressConnection` | `GetWordPressConnectionType` | — | `settings: GetWordPressConnectionArgs` |
+| `getWordPressConnections` | `GetWordPressConnectionsType` | — | — |
+| `updateEmail` | `BasicResponse` | — | `settings: UpdateEmailArgs` |
+| `updateIntegrationName` | `BasicResponse` | — | `integrationId: Int`, `name: String` |
+| `updateMicrosoftTeamsIntegration` | `BasicResponse` | — | `data: MicrosoftTeamsData`, `integrationId: Int` |
+| `updateSQLConnection` | `UpdateSQLConnectionType` | — | `settings: UpdateSQLConnectionArgs` |
+| `updateWordPressConnection` | `UpdateWordPressConnectionType` | — | `settings: UpdateWordPressConnectionArgs` |
 
 ### `query HexomaticNotification` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `hexomaticNotificationTypes` | *none* |
-| `hexomaticNotificationsChart` | *none* |
-| `hexomaticNotificationsPieChart` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `hexomaticNotificationTypes` | `hexomaticNotificationTypeResult` | — | — |
+| `hexomaticNotificationsChart` | `[HexomaticNotificationsChartDataType]` | — | — |
+| `hexomaticNotificationsPieChart` | `[HexomaticNotificationsPiechartDataType]` | — | `from: String`, `to: String` |
 
 ### `query HexomaticPublicScrapingRecipe` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getPublicScrapingRecipe` | *none* |
-| `getPublicScrapingRecipes` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getPublicScrapingRecipe` | `GetPublicScrapingRecipeResult` | — | `settings: GetPublicScrapingRecipeInput` |
+| `getPublicScrapingRecipes` | `GetPublicScrapingRecipesResult` | — | `settings: GetPublicScrapingRecipesInput` |
 
 ### `query HexomaticPublicWorkflow` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getPublicWorkflow` | *none* |
-| `getPublicWorkflows` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getPublicWorkflow` | `GetPublicWorkflowResult` | — | `settings: GetPublicWorkflowInput` |
+| `getPublicWorkflows` | `GetPublicWorkflowsResult` | — | `settings: GetPublicWorkflowsInput` |
 
 ### `query HexomaticScrapingCategory` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getScrapingCategories` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getScrapingCategories` | `GetHexomaticScrapingCategoriesResult` | — | — |
 
 ### `query HexomaticScrapingRecipe` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getScrapingRecipe` | *none* |
-| `getScrapingRecipes` | *none* |
-| `getScrapingRecipesByIds` | *none* |
-| `getSharedScrapingRecipesChart` | *none* |
-| `getSharedScrapingRecipesReport` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getScrapingRecipe` | `GetScrapingRecipeResult` | — | `settings: GetScrapingRecipeInput` |
+| `getScrapingRecipes` | `GetScrapingRecipesResult` | — | `settings: GetScrapingRecipesInput` |
+| `getScrapingRecipesByIds` | `GetScrapingRecipesByIdsResult` | — | `settings: GetScrapingRecipesByIdsInput` |
+| `getSharedScrapingRecipesChart` | `SharedScrapingRecipesChartResult` | — | `from: String`, `to: String` |
+| `getSharedScrapingRecipesReport` | `GetSharedScrapingRecipesReportResult` | — | `settings: GetSharedScrapingRecipesReportSettings` |
 
 ### `query HexomaticTag` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getUserHexomaticTags` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getUserHexomaticTags` | `GetUserHexomaticTagsResult` | — | — |
 
 ### `query HexomaticUser` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getDailyCreditsOfUser` | *none* |
-| `getDailyStatsOfUser` | *none* |
-| `updateStatsofUser` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getDailyCreditsOfUser` | `GetUserDailyCreditsResult` | — | `settings: GetUserDailyCreditsInput` |
+| `getDailyStatsOfUser` | `GetUserDailyStatsResult` | — | `settings: GetUserDailyStatsInput` |
+| `updateStatsofUser` | `UserStatsUpdateResult` | — | `settings: UserStatsUpdateInput` |
 
 ### `query HexomaticWorkflow` — 12 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getWorkflow` | *none* |
-| `getWorkflowChart` | *none* |
-| `getWorkflowChartByUser` | *none* |
-| `getWorkflowLogs` | *none* |
-| `getWorkflowOutputColumNames` | *none* |
-| `getWorkflowProgressData` | *none* |
-| `getWorkflowResultCSV` | *none* |
-| `getWorkflowResultJSON` | *none* |
-| `getWorkflowResultPreview` | *none* |
-| `getWorkflowScanLogs` | *none* |
-| `getWorkflowStatusCounts` | *none* |
-| `getWorkflows` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getWorkflow` | `GetWorkflowResult` | — | `settings: GetWorkflowInput` |
+| `getWorkflowChart` | `[PiechartDataType]` | — | `from: String`, `to: String` |
+| `getWorkflowChartByUser` | `[PiechartDataType]` | — | `from: String`, `to: String` |
+| `getWorkflowLogs` | `GetWorkflowLogsResult` | — | `settings: GetWorkflowLogsInput` |
+| `getWorkflowOutputColumNames` | `GetWorkflowOutputColumNamesResult` | — | `workflow_id: Int` |
+| `getWorkflowProgressData` | `GetWorkflowProgressDataResult` | — | `workflowId: Int` |
+| `getWorkflowResultCSV` | `GetWorkflowResultCSVResult` | — | `settings: GetWorkflowResultCSVInput` |
+| `getWorkflowResultJSON` | `GetWorkflowResultJSONResult` | — | `settings: GetWorkflowResultJSONInput` |
+| `getWorkflowResultPreview` | `GetWorkflowResultPreviewResult` | — | `settings: GetWorkflowResultPreview` |
+| `getWorkflowScanLogs` | `GetWorkflowScanLogsResult` | — | `settings: GetWorkflowScanLogsInput` |
+| `getWorkflowStatusCounts` | `GetWorkflowStatuesCountsResult` | — | — |
+| `getWorkflows` | `GetWorkflowsResult` | — | `settings: GetWorkflowsInput` |
 
 ### `query HexomaticWorkflowCategory` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getWorkflowCategories` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getWorkflowCategories` | `GetHexomaticWorkflowCategoriesResult` | — | — |
 
 ### `query Scraper` — fields UNKNOWN (not discovered)
 
@@ -367,329 +367,362 @@ The session token this gateway wants reaches the **whole account**, including bi
 
 ### `mutation HexosparkCampaignOps` — 6 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `addContacts` | *none* |
-| `create` | *none* |
-| `createSteps` | *none* |
-| `deleteAll` | *none* |
-| `duplicate` | *none* |
-| `update` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `addContacts` | `CampaignUpdateResult` | — | `settings: AddContactsToCampaignI` |
+| `create` | `CampaignCreateResult` | — | `settings: CreateCampaignInput` |
+| `createSteps` | `CampaignUpdateResult` | — | `settings: CreateStepsInput` |
+| `deleteAll` | `CreateUpdateType` | — | `settings: DeleteCampaignInput` |
+| `duplicate` | `CampaignUpdateResult` | — | `settings: DuplicateCampaign` |
+| `update` | `CampaignUpdateResult` | — | `settings: UpdateCampaignInput` |
 
 ### `mutation HexosparkCommonOps` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `importCSV` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `importCSV` | `ImportCsvResult` | — | `settings: ImportCSVInput` |
 
 ### `mutation HexosparkCrmContactOps` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteCrmContact` | *none* |
-| `move` | *none* |
-| `update` | *none* |
-| `updateBulk` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `CreateUpdateType` | — | `settings: CreateCrmInput` |
+| `deleteCrmContact` | `CreateUpdateType` | — | `settings: CrmDeleteInput` |
+| `move` | `CreateUpdateType` | — | `settings: MoveContactsInput` |
+| `update` | `CreateUpdateType` | — | `settings: CrmUpdateInput` |
+| `updateBulk` | `CreateUpdateType` | — | `settings: CrmUpdateBulkInput` |
 
 ### `mutation HexosparkCrmFolderOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteFolders` | *none* |
-| `updateFolder` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `UpdateAndCreateCrmFolderResultType` | — | `settings: CreateCrmFolderInput` |
+| `deleteFolders` | `DeleteCrmFoldersResultType` | — | `settings: DeleteCrmFoldersInput` |
+| `updateFolder` | `UpdateAndCreateCrmFolderResultType` | — | `settings: UpdateCrmFolderInput` |
 
 ### `mutation HexosparkIceBreakerOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteBulk` | *none* |
-| `update` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `ResultDefaultType` | — | `settings: CreateCrmIceBreakerInput` |
+| `deleteBulk` | `ResultDefaultType` | — | `settings: DeleteCrmIceBreakerInput` |
+| `update` | `ResultDefaultType` | — | `settings: UpdateCrmIceBreakerInput` |
 
 ### `mutation HexosparkIntegrationOpts` — 4 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `createSmtpIntegration` | *none* |
-| `deleteIntegrations` | *none* |
-| `updateGmailIntegration` | *none* |
-| `updateIntegration` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createSmtpIntegration` | `CreateUpdateType` | — | `settings: CreateSmtpIntegrationInput` |
+| `deleteIntegrations` | `DeleteIntegrationType` | — | `settings: DeleteIntegrationInput` |
+| `updateGmailIntegration` | `CreateUpdateType` | — | `settings: UpdateGmailIntegrationInput` |
+| `updateIntegration` | `CreateUpdateType` | — | `settings: UpdateIntegrationInput` |
 
 ### `mutation HexosparkTagOps` — 4 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteTags` | *none* |
-| `update` | *none* |
-| `updateRelatedTags` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `CreateHsTagResult` | — | `settings: CreateHsTagInput` |
+| `deleteTags` | `TagBaseResult` | — | `settings: DeleteTagsInput` |
+| `update` | `TagBaseResult` | — | `settings: UpdateHsTagInput` |
+| `updateRelatedTags` | `TagBaseResult` | — | `settings: UpdateRelatedHsTagInput` |
 
 ### `mutation HexosparkUserOps` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `updateHexosparkPackage` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `updateHexosparkPackage` | `UpdateHexosparkPackageResult` | — | `settings: UpdateHexosparkPackageInput` |
 
 ### `mutation HexosparkUserWorkspaceOps` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `addUserInWorkspace` | *none* |
-| `create` | *none* |
-| `deleteBulk` | *none* |
-| `deleteSharedWorkspace` | *none* |
-| `update` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `addUserInWorkspace` | `AddUserInWorkspaceResult` | — | `settings: AddUserInWorkspaceInput` |
+| `create` | `CreateResult` | — | `settings: CreateInput` |
+| `deleteBulk` | `DeleteResult` | — | `settings: DeleteInput` |
+| `deleteSharedWorkspace` | `DeleteResult` | — | `settings: DeleteSharedWorkspaceInput` |
+| `update` | `UpdateResult` | — | `settings: UpdateInput` |
 
 ### `query HexosparkCampaign` — 8 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getCampaign` | *none* |
-| `getCampaignContactStatusChart` | *none* |
-| `getCampaignContactStatusTimeSeries` | *none* |
-| `getCampaignCrmContacts` | *none* |
-| `getCampaignCrmContactsStatsCSV` | *none* |
-| `getCampaignLogs` | *none* |
-| `getCampaigns` | *none* |
-| `getCampaignsList` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getCampaign` | `CampaignType` | — | `settings: GetCampaignInput` |
+| `getCampaignContactStatusChart` | `GetCampaignContactStatusChartResult` | — | `settings: GetCampaignContactStatusChartInput` |
+| `getCampaignContactStatusTimeSeries` | `GetCampaignContactStatusTimeSeriesResult` | — | `settings: GetCampaignContactStatusChartInput` |
+| `getCampaignCrmContacts` | `GetCampaignCrmContactsType` | — | `settings: GetCampaignCrmContactsInput` |
+| `getCampaignCrmContactsStatsCSV` | `GetCampaignCrmContactsStatsCSVType` | — | `settings: GetCampaignCrmContactsStatsCSVInput` |
+| `getCampaignLogs` | `GetCampaignLogsType` | — | `settings: GetCampaignLogsInput` |
+| `getCampaigns` | `GetCampaignsType` | — | `settings: GetCampaignsInput` |
+| `getCampaignsList` | `GetCampaignsType` | — | `settings: GetCampaignsInput` |
 
 ### `query HexosparkCommon` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `exportCSV` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `exportCSV` | `ExportCSVResult` | — | `settings: ExportCSVInput` |
 
 ### `query HexosparkCrmContact` — 8 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getCrmContactColumns` | *none* |
-| `getCrmContactCount` | `workspaceId: String!` |
-| `getCrmContactLogs` | *none* |
-| `getCrmContactStatusChart` | *none* |
-| `getCrmContactWithOptions` | *none* |
-| `getCrmContacts` | *none* |
-| `getCrmMessagesLog` | *none* |
-| `unsubscribe` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getCrmContactColumns` | `GetCrmContactColumnsResult` | — | — |
+| `getCrmContactCount` | `GetCrmContactCountResult` | `workspaceId: String!` | — |
+| `getCrmContactLogs` | `GetCrmContactLogsType` | — | `settings: GetCrmContactLogsInput` |
+| `getCrmContactStatusChart` | `GetCrmContactStatusChartResult` | — | `settings: GetCrmContactStatusChartSettings` |
+| `getCrmContactWithOptions` | `GetCrmContactType` | — | `settings: GetCrmContactInput` |
+| `getCrmContacts` | `GetCrmContactsType` | — | `settings: GetCrmContactsInput` |
+| `getCrmMessagesLog` | `GetCrmMessagesLogType` | — | `settings: GetCrmContactLogsInput` |
+| `unsubscribe` | `UnsubscribeType` | — | `settings: UnsubscribeInput` |
 
 ### `query HexosparkCrmFolder` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getChildFolders` | *none* |
-| `getParentFolder` | *none* |
-| `getParentsByChildId` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getChildFolders` | `GetChildCrmFolderType` | — | `settings: GetChildFolderInput` |
+| `getParentFolder` | `GetCrmParentFolderType` | — | `settings: GetParentCrmFolderInput` |
+| `getParentsByChildId` | `GetParentsByChildIdType` | — | `settings: GetParentsByChildIdInput` |
 
 ### `query HexosparkCrmOrganization` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getCrmOrganizationColumns` | *none* |
-| `getCrmOrganizationCount` | `workspaceId: String!` |
-| `getCrmOrganizationWithOptions` | *none* |
-| `getCrmOrganizations` | *none* |
-| `getCrmOrganizationsLogs` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getCrmOrganizationColumns` | `GetCrmContactColumnsResult` | — | — |
+| `getCrmOrganizationCount` | `GetCrmOrganizationsCountResult` | `workspaceId: String!` | — |
+| `getCrmOrganizationWithOptions` | `GetCrmOrganizationType` | — | `settings: GetCrmOrganizationInput` |
+| `getCrmOrganizations` | `GetCrmOrganizationsType` | — | `settings: GetCrmOrganizationsInput` |
+| `getCrmOrganizationsLogs` | `GetCrmContactLogsType` | — | `settings: GetCrmContactLogsInput` |
 
 ### `query HexosparkEmailTemplate` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `EmailTemplateType` | — | `settings: GetEmailTemplateInput` |
 
 ### `query HexosparkIceBreaker` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `GetFullCrmIceBreakerType` | — | `settings: GetCrmIceBreakerInput` |
 
 ### `query HexosparkIntegration` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getIntegrations` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getIntegrations` | `GetIntegrationsResult` | — | `settings: GetIntegrationsInput` |
 
 ### `query HexosparkPersonalizedImage` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `GetPersonalizedImageResult` | — | `settings: GetPersonalizedImage` |
 
 ### `query HexosparkPublicEmailTemplate` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getPublicEmailTemplateCategories` | *none* |
-| `getPublicEmailTemplates` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getPublicEmailTemplateCategories` | `GetPublicEmailTemplateCategoriesResult` | — | `settings: GetPublicEmailTemplatesInput` |
+| `getPublicEmailTemplates` | `GetPublicEmailTemplatesResult` | — | `settings: GetPublicEmailTemplatesInput` |
 
 ### `query HexosparkTag` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getUserTags` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getUserTags` | `GetUserTagsResult` | — | `settings: GetUserTagsInput` |
 
 ### `query HexosparkUnifiedInbox` — fields UNKNOWN (not discovered)
 
 ### `query HexosparkUser` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getHexosparkUser` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getHexosparkUser` | `GetHexosparkUserResult` | — | — |
 
 ### `query HexosparkUserDailyStats` — 6 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getCampaignEmailStatusChartPerIntegration` | *none* |
-| `getCampaignEmailStatusTimeSeries` | *none* |
-| `getCampaignEmailStatusesChart` | *none* |
-| `getHexosparkUserDailyStatsPerIntegration` | *none* |
-| `getHexosparkUserDailyStatsPerWorkspace` | *none* |
-| `getHexosparkUserDailyStatsTimeSeries` | `workspaceId: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getCampaignEmailStatusChartPerIntegration` | `GetCampaignEmailStatusChartPerIntegrationResult` | — | `settings: GetCampaignEmailStatusChartInput` |
+| `getCampaignEmailStatusTimeSeries` | `HexosparkUserDailyStatsTimeSeriesResult` | — | `settings: GetCampaignEmailStatusChartInput` |
+| `getCampaignEmailStatusesChart` | `GetCampaignEmailStatusChartResult` | — | `settings: GetCampaignEmailStatusChartInput` |
+| `getHexosparkUserDailyStatsPerIntegration` | `GetHexosparkUserDailyStatsPerIntegrationResult` | — | `settings: GetHexosparkUserDailyStatsPerWorkspaceSettings` |
+| `getHexosparkUserDailyStatsPerWorkspace` | `HexosparkUserDailyStatsChartResult` | — | `settings: GetHexosparkUserDailyStatsPerWorkspaceSettings` |
+| `getHexosparkUserDailyStatsTimeSeries` | `HexosparkUserDailyStatsTimeSeriesResult` | `workspaceId: String!` | `from: String`, `to: String` |
 
 ### `query HexosparkUserWorkspace` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `HexosparkUserWorkspaceType` | — | `settings: GetInput` |
 
 ## Hexometer
 
 ### `mutation HexometerIssuesOps` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `updateIssue` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `updateIssue` | `BaseMutationResponse` | — | `ids: [String]` |
 
 ### `mutation HexometerSubPropertyOpts` — 4 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | `property_id: Int!`, `address: String!` |
-| `createMany` | `property_id: Int!`, `address_list: [String]!` |
-| `deleteMany` | `sub_property_ids: [Int]!` |
-| `updateMany` | `property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `BaseMutationResponse` | `property_id: Int!`, `address: String!` | `tool: String` |
+| `createMany` | `HexometerSubPropertyCreateManyResponse` | `property_id: Int!`, `address_list: [String]!` | `tool: String` |
+| `deleteMany` | `BaseMutationResponse` | `sub_property_ids: [Int]!` | — |
+| `updateMany` | `BaseMutationResponse` | `property_id: Int!` | `active: Boolean`, `parent: Boolean` |
 
 ### `mutation HexometerUserSettingsOpts` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `updateHexometerPackage` | *none* |
-| `updatePricingPackage` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `updateHexometerPackage` | `UpdateHexometerPackageResult` | — | `productId: String` |
+| `updatePricingPackage` | `UpdateHexometerUserPricingPackageMutationResult` | — | — |
 
 ### `mutation PropertyOps` — 5 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | `address: String!` |
-| `getReport` | `propertyId: String!`, `reportType: String!` |
-| `rescanProperty` | `property_id: Int!` |
-| `update` | `property_id: Int!` |
-| `updatePropertySiteMapSettings` | `property_id: Int!`, `siteMapUrl: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `PropertyCreateMutationResponse` | `address: String!` | — |
+| `getReport` | `MonitoringReportResponseType` | `propertyId: String!`, `reportType: String!` | — |
+| `rescanProperty` | `BaseMutationResponse` | `property_id: Int!` | `parent: Boolean` |
+| `update` | `BaseMutationResponse` | `property_id: Int!` | — |
+| `updatePropertySiteMapSettings` | `SitemapSettingMutationResponse` | `property_id: Int!`, `siteMapUrl: String!` | — |
 
 ### `mutation PropertySettingsOps` — 4 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `subscribeWebhook` | `propertyId: String!`, `webhookUrl: String!` |
-| `unsubscribeWebhook` | `propertyId: String!`, `subscriptionId: String!` |
-| `update` | `propertyId: String!`, `emails: [PropertyEmailConfigInput]!` |
-| `updateWebhook` | `propertyId: String!`, `subscriptionId: String!`, `updateWebhook: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `subscribeWebhook` | `BaseMutationResponse` | `propertyId: String!`, `webhookUrl: String!` | — |
+| `unsubscribeWebhook` | `BaseMutationResponse` | `propertyId: String!`, `subscriptionId: String!` | — |
+| `update` | `BaseMutationResponse` | `propertyId: String!`, `emails: [PropertyEmailConfigInput]!` | `emailEnabled: Boolean` |
+| `updateWebhook` | `BaseMutationResponse` | `propertyId: String!`, `subscriptionId: String!`, `updateWebhook: String!` | — |
 
 ### `query HexometerIssues` — fields UNKNOWN (not discovered)
 
 ### `query HexometerSubProperty` — 6 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getPropertyPToolScansChartData` | `property_id: Int!`, `ptool: String!` |
-| `getPropertyToolGroupChartData` | `property_id: Int!`, `tool_group: String!` |
-| `getSubProperties` | `property_id: Int!` |
-| `getSubPropertyPass` | `ptool: String!` |
-| `getSubPropertyPasses` | `sub_property_id: Int!`, `page: Int!`, `limit: Int!`, `ptool: String!` |
-| `getSubPropertyScansChartData` | `property_id: Int!`, `sub_property_id: Int!`, `page: Int!`, `limit: Int!`, `ptool: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getPropertyPToolScansChartData` | `GetPropertyPToolScansChartDataMutationResult` | `property_id: Int!`, `ptool: String!` | `limit: Int` |
+| `getPropertyToolGroupChartData` | `GetPropertyToolGroupChartDataMutationResult` | `property_id: Int!`, `tool_group: String!` | `limit: Int` |
+| `getSubProperties` | `GetSubPropertiesMutationResult` | `property_id: Int!` | `filter: GetSubPropertiesFiltersInput`, `parent: Boolean`, `tools: [String]` |
+| `getSubPropertyPass` | `GetSubPropertyPassMutationResult` | `ptool: String!` | — |
+| `getSubPropertyPasses` | `GetSubPropertyPassesMutationResult` | `sub_property_id: Int!`, `page: Int!`, `limit: Int!`, `ptool: String!` | `from: String`, `to: String` |
+| `getSubPropertyScansChartData` | `GetPropertyScansChartDataMutationResult` | `property_id: Int!`, `sub_property_id: Int!`, `page: Int!`, `limit: Int!`, `ptool: String!` | `from: String`, `to: String` |
 
 ### `query HexometerUserSettings` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | `user_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `HexometerUserSettingsType` | `user_id: Int!` | — |
 
 ### `query Property` — 4 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
-| `getPropertySiteMapSettings` | `property_id: Int!` |
-| `getPropertyUptimeLog` | `uptime_log_id: Int!`, `property_id: Int!` |
-| `getPropertyUptimeUrls` | `property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `PropertyType` | — | — |
+| `getPropertySiteMapSettings` | `SitemapSettingsType` | `property_id: Int!` | — |
+| `getPropertyUptimeLog` | `GetPropertyUptimeLogMutationResult` | `uptime_log_id: Int!`, `property_id: Int!` | — |
+| `getPropertyUptimeUrls` | `GetPropertyUptimeUrlsMutationResult` | `property_id: Int!` | `tool: UPTIME_TOOL` |
 
 ### `query PropertySettings` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | `propertyId: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `PropertySettingsType` | `propertyId: String!` | — |
 
 ## Hexofy
 
 ### `mutation HexofyScrapingRecipeOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteAll` | *none* |
-| `update` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `DefaultResult` | — | `settings: CreateHfScrapingRecipeI` |
+| `deleteAll` | `DefaultResult` | — | `settings: DeleteHfScrapingRecipeBulkI` |
+| `update` | `DefaultResult` | — | `settings: UpdateHfScrapingRecipeI` |
 
 ### `mutation HexofyShareWorkspaceOps` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `deleteAll` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `deleteAll` | `DefaultResult` | — | `settings: DeleteHfSharedBulkI` |
 
 ### `mutation HexofyUserOps` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `updateHexofyPackage` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `updateHexofyPackage` | `UpdateHexofyPackageResult` | — | `settings: UpdateHexofyPackageInput` |
 
 ### `mutation HexofyWorkspaceOps` — 4 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteAll` | *none* |
-| `update` | *none* |
-| `updateHexofyPrompt` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `DefaultResult` | — | `settings: CreateSettingsI` |
+| `deleteAll` | `DefaultResult` | — | `settings: DeleteBulkI` |
+| `update` | `DefaultResult` | — | `settings: UpdateSettingsI` |
+| `updateHexofyPrompt` | `DefaultResult` | — | `settings: UpdateHexofyPromptSettingsI` |
 
 ### `query HexofyScrapingRecipe` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `check` | *none* |
-| `get` | *none* |
-| `getAll` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `check` | `HexofyScrapingRecipeType` | — | `settings: GetScrapingRecipeSettingsI` |
+| `get` | `HexofyScrapingRecipeType` | — | `settings: GetScrapingRecipeSettingsI` |
+| `getAll` | `GetAllHexofyScrapingRecipeType` | — | `settings: GetAllScrapingRecipeSettingsI` |
 
 ### `query HexofyShareWorkspace` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
-| `getAll` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `HexofySharedWorkspaceType` | — | `settings: GetHfSharedSettingsI` |
+| `getAll` | `GetAllHfSharedWorkspaceType` | — | `settings: GetHfSharedWorkspaceAllSettingsI` |
 
 ### `query HexofyUser` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getHexofyUser` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getHexofyUser` | `GetHexofyUserResult` | — | — |
 
 ### `query HexofyWorkspace` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
-| `getAll` | *none* |
-| `getHexofyPrompt` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `HexofyWorkspaceType` | — | `settings: GetSettingsI` |
+| `getAll` | `GetAllHexofyWorkspaceType` | — | `settings: GetAllSettingsI` |
+| `getHexofyPrompt` | `GetHexofyPromptResult` | — | `settings: GetHexofyPromptsSettingsI` |
+
+## Hexoscope
+
+### `mutation HexoscopeUserOps` — 2 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `updateHexoscopePackage` | `UpdateHexoscopePackageResult` | — | `settings: UpdateHexoscopePackageInput` |
+| `updateHexoscopeType` | `UpdateHexoscopeTypeResult` | — | `settings: UpdateHexoscopeTypeInput` |
+
+### `mutation HexoscopeWorkspaceOps` — 5 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `DefaultResult` | — | `settings: CreateSettingsI` |
+| `deleteAll` | `DefaultResult` | — | `settings: DeleteBulkI` |
+| `runHexoscopeSocialOrArticle` | `RunHexoscopeSocialOrArticleResult` | — | `settings: RunHexoscopeSocialOrArticleSettingsI` |
+| `update` | `DefaultResult` | — | `settings: UpdateSettingsI` |
+| `updateHexoscopePrompt` | `DefaultResult` | — | `settings: UpdateHexoscopePromptSettingsI` |
+
+### `query HexoscopeUser` — 1 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getHexoscopeUser` | `GetHexoscopeUserResult` | — | — |
+
+### `query HexoscopeWorkspace` — 3 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `HexoscopeWorkspaceType` | — | `settings: GetSettingsI` |
+| `getAll` | `GetAllHexoscopeWorkspaceType` | — | `settings: GetAllSettingsI` |
+| `getHexoscopePrompt` | `GetHexoscopePromptResult` | — | `settings: GetHexoscopePromptsSettingsI` |
 
 ## Account / shared
 
@@ -701,138 +734,105 @@ The session token this gateway wants reaches the **whole account**, including bi
 
 ### `mutation KeywordOps` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `create` | `key: String!`, `text: String!` |
-| `delete` | `key: String!` |
-| `update` | `key: String!`, `text: String!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `create` | `BaseMutationResponse` | `key: String!`, `text: String!` | — |
+| `delete` | `BaseMutationResponse` | `key: String!` | — |
+| `update` | `BaseMutationResponse` | `key: String!`, `text: String!` | — |
 
 ### `mutation ShortlinkOps` — fields UNKNOWN (not discovered)
 
 ### `mutation TaskOps` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminCreate` | `id: Int!`, `title: String!`, `content: String!`, `taskType: String!`, `priority: String!` |
-| `adminResolve` | `id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminCreate` | `BaseMutationResponse` | `id: Int!`, `title: String!`, `content: String!`, `taskType: String!`, `priority: String!` | — |
+| `adminResolve` | `BaseMutationResponse` | `id: Int!` | — |
 
 ### `mutation UserOps` — 16 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `addAgencyGrowthUrls` | *none* |
-| `adminUpdate` | `id: ID!` |
-| `authAccessToken` | `refreshToken: String!` |
-| `authRefreshToken` | `email: String!`, `password: String!` |
-| `delete` | `id: ID!` |
-| `forgotPassword` | *none* |
-| `registration` | `email: String!`, `password: String!` |
-| `resendVerification` | *none* |
-| `resetPassword` | *none* |
-| `scheduleToDelete` | *none* |
-| `twofaRegister` | *none* |
-| `twofaSettings` | *none* |
-| `twofaVerify` | *none* |
-| `updateAgencyGrowthSettings` | *none* |
-| `updatePassword` | *none* |
-| `verify` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `addAgencyGrowthUrls` | `BaseMutationResponse` | — | `urls: [String]`, `user_agent: Boolean` |
+| `adminUpdate` | `BaseMutationResponse` | `id: ID!` | `email: String` |
+| `authAccessToken` | `UserLoginResponse` | `refreshToken: String!` | — |
+| `authRefreshToken` | `UserLoginResponse` | `email: String!`, `password: String!` | — |
+| `delete` | `BaseMutationResponse` | `id: ID!` | — |
+| `forgotPassword` | `BaseMutationResponse` | — | `email: String`, `type: String` |
+| `registration` | `UserLoginResponse` | `email: String!`, `password: String!` | `type: String` |
+| `resendVerification` | `BaseMutationResponse` | — | — |
+| `resetPassword` | `BaseMutationResponse` | — | — |
+| `scheduleToDelete` | `BaseMutationResponse` | — | — |
+| `twofaRegister` | `TwoFaResponse` | — | `productType: String`, `type: String` |
+| `twofaSettings` | `TwoFaResponse` | — | `status: Boolean`, `type: String` |
+| `twofaVerify` | `TwoFaResponse` | — | `email: String`, `productType: String` |
+| `updateAgencyGrowthSettings` | `GetAgencyGrowthSettingsResult` | — | `settings: AgencyGrowthSettingsInput` |
+| `updatePassword` | `BaseMutationResponse` | — | — |
+| `verify` | `UserLoginResponse` | — | — |
 
 ### `mutation UserWatchSettingsOps` — 7 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `subscribeWebhook` | *none* |
-| `unsubscribeWebhook` | *none* |
-| `update` | *none* |
-| `updateMobileUserNotificationSettings` | *none* |
-| `updateMonitoringSettings` | *none* |
-| `updateUserEmailSettings` | *none* |
-| `updateWebhook` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `subscribeWebhook` | `BaseMutationResponse` | — | `webhookUrl: String` |
+| `unsubscribeWebhook` | `BaseMutationResponse` | — | `subscriptionId: String` |
+| `update` | `BaseMutationResponse` | — | `emailEnabled: Boolean`, `emails: [UserWatchSettingsEmailUpdateType]` |
+| `updateMobileUserNotificationSettings` | `BaseMutationResponse` | — | `settings: UpdateMobileUserNotificationSettingsInput` |
+| `updateMonitoringSettings` | `BaseMutationResponse` | — | `change_notification_level: String`, `monitoring_interval: String`, `pauseAfterFirstChangeEvent: Boolean` |
+| `updateUserEmailSettings` | `BaseMutationResponse` | — | `settings: UpdateUserEmailSettingsInput` |
+| `updateWebhook` | `BaseMutationResponse` | — | `subscriptionId: String` |
 
 ### `query Admin` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminGet` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminGet` | `AdminType` | — | — |
 
 ### `query Alert` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | `monitoringLog: String!`, `property_id: Int!` |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `AlertType` | `monitoringLog: String!`, `property_id: Int!` | — |
 
 ### `query Billing` — fields UNKNOWN (not discovered)
 
 ### `query Keyword` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getAll` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getAll` | `KeywordType` | — | — |
 
 ### `query Notification` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `notificationsChart` | *none* |
-| `notificationsPieChart` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `notificationsChart` | `[NotificationsChartDataType]` | — | — |
+| `notificationsPieChart` | `[NotificationsPiechartDataType]` | — | `from: String`, `to: String` |
 
 ### `query Shortlink` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `getOne` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getOne` | `ShortlinkGetOneResult` | — | — |
 
 ### `query Task` — 2 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminTasksPiechart` | *none* |
-| `tasksPiechart` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminTasksPiechart` | `[adminTDataType]` | — | `from: String`, `to: String` |
+| `tasksPiechart` | `[TasksPieChartType]` | — | `propertyId: String` |
 
 ### `query User` — 3 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
-| `getMany` | *none* |
-| `getUserPlans` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `get` | `UserType` | — | `id: UNKNOWN` |
+| `getMany` | `UserResultType` | — | `active: Boolean`, `input: FilterArgsType`, `integration: String`, `orderBy: String`, `orderByASC: Boolean`, `source: String`, `type: String`, `user_status: String` |
+| `getUserPlans` | `GetUserPlansResult` | — | — |
 
 ### `query UserLog` — 1 field(s)
 
-| Field | Required arguments |
-| --- | --- |
-| `adminUserLog` | `id: ID!` |
-
-## Unclassified
-
-### `mutation HexoscopeUserOps` — 2 field(s)
-
-| Field | Required arguments |
-| --- | --- |
-| `updateHexoscopePackage` | *none* |
-| `updateHexoscopeType` | *none* |
-
-### `mutation HexoscopeWorkspaceOps` — 5 field(s)
-
-| Field | Required arguments |
-| --- | --- |
-| `create` | *none* |
-| `deleteAll` | *none* |
-| `runHexoscopeSocialOrArticle` | *none* |
-| `update` | *none* |
-| `updateHexoscopePrompt` | *none* |
-
-### `query HexoscopeUser` — 1 field(s)
-
-| Field | Required arguments |
-| --- | --- |
-| `getHexoscopeUser` | *none* |
-
-### `query HexoscopeWorkspace` — 3 field(s)
-
-| Field | Required arguments |
-| --- | --- |
-| `get` | *none* |
-| `getAll` | *none* |
-| `getHexoscopePrompt` | *none* |
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `adminUserLog` | `[UserLogType]` | `id: ID!` | — |
 

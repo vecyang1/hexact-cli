@@ -26,6 +26,7 @@ PRODUCTS = [
     ("Hexospark", ("Hexospark",)),
     ("Hexometer", ("Hexometer", "Property")),
     ("Hexofy", ("Hexofy",)),
+    ("Hexoscope", ("Hexoscope",)),
     ("Account / shared", ("User", "Billing", "Team", "Admin", "Alert", "Task",
                           "Keyword", "Shortlink", "Tag", "Notification")),
 ]
