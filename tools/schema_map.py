@@ -41,7 +41,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-USER_AGENT = "hexact-cli/0.4.0 (+https://github.com/vecyang1/hexact-cli)"
+# One owner for the agent string: the package. A second copy here drifted
+# behind a version bump once already.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hexact.http import USER_AGENT  # noqa: E402
 HOSTS = {
     "hexowatch": "https://api.hexowatch.com/v2/ql",
     "hexomatic": "https://api.hexomatic.com/v2/ql",

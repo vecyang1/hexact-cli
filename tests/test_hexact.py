@@ -16,6 +16,7 @@ import http.client
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import unittest
@@ -37,7 +38,8 @@ for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
 
 from hexact import (  # noqa: E402
-    auth, cli, cli_hexomatic, cli_hexowatch, config, graphql, hexomatic, hexowatch,
+    auth, cli, cli_hexomatic, cli_hexowatch, config, graphql, hexomatic, hexometer,
+    hexospark, hexowatch,
 )
 from hexact.cli import (  # noqa: E402
     _is_paused, _normalise_address, _parse_timestamp, _rows, _state_label,
@@ -1412,3 +1414,115 @@ class TestNoiseBreakdownSurvivesAnEmptyPeriod(unittest.TestCase):
                 argparse.Namespace(json=False, since=None, until=None))
         self.assertEqual(code, 0)
         self.assertIn("visual", out.getvalue())
+
+
+class TestHexosparkStaysReadOnly(unittest.TestCase):
+    """The read-only boundary, pinned structurally rather than by intention.
+
+    Hexospark's writes create campaigns and attach contacts, which puts mail in
+    front of real people. Two independent things must hold: the module ships no
+    mutation document, and the allowlist refuses every Hexospark operation. A
+    later change that adds one has to defeat both, and the second still holds
+    even if this module is rewritten.
+    """
+
+    def test_the_module_contains_no_mutation_document(self):
+        """Inspects the module's GraphQL constants, not its prose.
+
+        A first version grepped the source for lines starting with `mutation`
+        and failed on its own docstring, which is the standard way a structural
+        test becomes something people delete instead of trust.
+        """
+        documents = [value for name in dir(hexospark)
+                     if name.isupper()
+                     for value in [getattr(hexospark, name)]
+                     if isinstance(value, str)]
+        offending = [d[:60] for d in documents
+                     if re.match(r"\s*mutation\b", d)]
+        self.assertEqual(offending, [],
+                         "hexospark.py is read-only by design; a mutation appeared")
+
+    def test_the_allowlist_refuses_every_hexospark_operation(self):
+        for operation in ("HexosparkCampaignOps.create",
+                          "HexosparkCampaignOps.addContacts",
+                          "HexosparkCrmContactOps.create",
+                          "HexosparkCommonOps.importCSV"):
+            with self.assertRaises(HexactAPIError):
+                graphql.mutate(operation, {}, token="t")
+
+
+class TestNewGatewayOperationNamesArePinned(unittest.TestCase):
+    """The vendor's names are undocumented and unversioned.
+
+    A silent rename should fail here loudly rather than return null at runtime,
+    where `unwrap` would report it as an auth failure and send the reader to
+    re-login for no reason.
+    """
+
+    EXPECTED = {
+        "graphql.USER_TAGS_QUERY": ["WatchTag", "getUserWatchTags"],
+        "graphql.PROPERTY_TAGS_QUERY": ["WatchTag", "getWatchPropertyTags"],
+        "graphql.USER_PROPERTIES_QUERY": ["Watch", "getUserWatchProperties"],
+        "graphql.NOTIFICATIONS_PIE_QUERY": ["WatchNotification",
+                                            "watchNotificationsPieChart"],
+        "hexomatic.WORKFLOWS_QUERY": ["HexomaticWorkflow", "getWorkflows"],
+        "hexomatic.WORKFLOW_RESULT_JSON_QUERY": ["HexomaticWorkflow",
+                                                 "getWorkflowResultJSON"],
+        "hexomatic.CREDIT_USAGE_QUERY": ["HexomaticAutomation",
+                                         "getAutomationCreditUsage"],
+        "hexospark.CRM_CONTACTS_QUERY": ["HexosparkCrmContact", "getCrmContacts"],
+        "hexospark.CAMPAIGNS_QUERY": ["HexosparkCampaign", "getCampaigns"],
+        "hexometer.PROPERTIES_QUERY": ["Property", "get"],
+        "hexometer.ISSUES_QUERY": ["HexometerIssues", "getIssues"],
+    }
+
+    def test_every_document_names_the_namespace_and_field_it_unwraps(self):
+        modules = {"graphql": graphql, "hexomatic": hexomatic,
+                   "hexospark": hexospark, "hexometer": hexometer}
+        for dotted, (namespace, field) in self.EXPECTED.items():
+            module_name, _, attribute = dotted.partition(".")
+            document = getattr(modules[module_name], attribute)
+            self.assertIn(namespace, document, f"{dotted} lost its namespace")
+            self.assertIn(field, document, f"{dotted} lost its field")
+
+
+class TestDerivedReferencesStayReachable(unittest.TestCase):
+    """A derived doc nobody can find is a doc that rots unnoticed.
+
+    Asserts the route exists, not that anyone read it: TYPES.md is generated,
+    and the only thing keeping it discoverable is a link from the curated
+    reference. Both files also have to actually be there -- a link to a
+    document that was never committed sends a reader somewhere worse than
+    nowhere.
+    """
+
+    def test_api_md_links_both_derived_references(self):
+        root = Path(__file__).resolve().parent.parent
+        api = (root / "docs" / "API.md").read_text(encoding="utf-8")
+        for name in ("GATEWAY.md", "TYPES.md"):
+            self.assertTrue((root / "docs" / name).is_file(), f"docs/{name} is missing")
+            self.assertIn(name, api, f"docs/API.md does not link {name}")
+
+
+class TestUserAgentTracksTheVersion(unittest.TestCase):
+    """A User-Agent that lies about its version is worse than an unversioned one.
+
+    It was typed by hand in two files, and a bump updated neither, so the
+    server-side log claimed a release that was never the one running. Cheap and
+    decidable, so it is checked rather than remembered.
+    """
+
+    def test_the_agent_string_contains_the_package_version(self):
+        from hexact import __version__
+        from hexact.http import USER_AGENT
+        self.assertIn(__version__, USER_AGENT)
+
+    def test_no_module_hardcodes_a_different_version(self):
+        from hexact import __version__
+        root = Path(__file__).resolve().parent.parent
+        stale = []
+        for path in list((root / "hexact").glob("*.py")) + list((root / "tools").glob("*.py")):
+            for match in re.finditer(r"hexact-cli/(\d+\.\d+\.\d+)", path.read_text(encoding="utf-8")):
+                if match.group(1) != __version__:
+                    stale.append(f"{path.name}: {match.group(0)}")
+        self.assertEqual(stale, [], "a hardcoded agent string drifted from __version__")

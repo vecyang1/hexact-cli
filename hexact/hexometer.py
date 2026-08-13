@@ -57,3 +57,65 @@ def detected_errors(key: str, property_id: int, tool_name: str) -> dict[str, Any
     """Errors detected by one Hexometer tool on one property."""
     return _call(key, "detected_errors", method="POST",
                  body={"property_id": property_id, "tool_name": tool_name})
+
+
+# --- GraphQL: reads REST does not serve -------------------------------------
+# The documented REST surface is four read endpoints keyed by a *per-property*
+# API key, so an account with several properties needs several keys and still
+# cannot see the property list itself. The gateway serves both from the one
+# session token.
+#
+# Writes (`PropertyOps.rescanProperty`, `getReport`, sub-property CRUD) are
+# deliberately NOT wired. `PropertyOps` is in `graphql.FORBIDDEN_NAMESPACES`;
+# rescans consume the account's scan quota and report generation is billable
+# work, so widening that boundary is a decision for the account owner, not
+# something to slip in beside a read.
+
+from . import graphql  # noqa: E402
+
+PROPERTIES_QUERY = """
+query {
+  Property {
+    get {
+      id name address hostname paused propertyType shared createdAt updatedAt
+      taskCounts { general metaTags resolved }
+    }
+  }
+}
+"""
+
+ISSUES_QUERY = """
+query($settings: GetHexometerIssueSettings!) {
+  HexometerIssues {
+    getIssues(settings: $settings) {
+      error
+      message
+      issues {
+        id address tool type level group resource resolved
+        created_at updated_at
+      }
+    }
+  }
+}
+"""
+
+
+def properties_detailed(token: str) -> Any:
+    """Every property on the account, with its open-issue counts.
+
+    REST needs one key per property and has no endpoint that lists them, so
+    this is the only way to enumerate what the account actually monitors.
+    """
+    data = graphql.execute(PROPERTIES_QUERY, token=token)
+    return graphql.unwrap(data, "Property", "get")
+
+
+def issues(
+    token: str, *, page: int = 1, limit: int = 50, tool: str | None = None,
+) -> dict[str, Any]:
+    """Detected issues, paged. `settings` is required by the schema."""
+    settings: dict[str, Any] = {"page": int(page), "limit": int(limit)}
+    if tool:
+        settings["tool"] = tool
+    data = graphql.execute(ISSUES_QUERY, {"settings": settings}, token=token)
+    return graphql.unwrap(data, "HexometerIssues", "getIssues")

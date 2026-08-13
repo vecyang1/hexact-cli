@@ -14,7 +14,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import auth, cli_hexomatic, cli_hexowatch, graphql, hexomatic, hexometer, hexowatch
+from . import (
+    auth, cli_hexomatic, cli_hexometer, cli_hexospark, cli_hexowatch, graphql,
+    hexomatic, hexometer, hexowatch,
+)
 from .config import HEXOMATIC, HEXOMETER, HEXOWATCH, CredentialError, resolve_key
 from .http import HexactAPIError, redact
 from .output import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, emit
@@ -1297,6 +1300,34 @@ def build_parser() -> argparse.ArgumentParser:
     errors.add_argument("--tool-name", required=True, dest="tool_name",
                         help=f"e.g. {hexometer.EXAMPLE_TOOL_NAME}")
     errors.set_defaults(func=cmd_errors)
+
+    # Gateway-served Hexometer reads. REST needs a per-property key and cannot
+    # list properties at all, so these are the only way to enumerate them.
+    meter_sub.add_parser(
+        "overview",
+        help="every property with its open-issue counts (GraphQL; needs `auth login`)"
+    ).set_defaults(func=cli_hexometer.cmd_overview)
+    issues = meter_sub.add_parser("issues", help="detected issues, paged")
+    issues.add_argument("--page", type=int, default=1)
+    issues.add_argument("--limit", type=int, default=50)
+    issues.add_argument("--tool", metavar="NAME")
+    issues.set_defaults(func=cli_hexometer.cmd_issues)
+
+    # Hexospark has no REST API at all -- these exist only here. Reads only:
+    # the campaign writes send mail to real people and are refused by the
+    # mutation allowlist.
+    spark = subparsers.add_parser(
+        "spark", help="Hexospark: CRM and outreach (GraphQL only; no REST API exists)")
+    spark_sub = spark.add_subparsers(dest="spark_command", required=True)
+    contacts = spark_sub.add_parser(
+        "contacts", help="CRM contacts with their outreach counters")
+    contacts.add_argument("--campaign", metavar="ID")
+    contacts.add_argument("--search", metavar="TEXT")
+    contacts.set_defaults(func=cli_hexospark.cmd_contacts)
+    campaigns = spark_sub.add_parser(
+        "campaigns", help="outreach campaigns with schedule and status")
+    campaigns.add_argument("--search", metavar="TEXT")
+    campaigns.set_defaults(func=cli_hexospark.cmd_campaigns)
 
     return parser
 

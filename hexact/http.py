@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from . import __version__
+
 DEFAULT_TIMEOUT_SECONDS = 60
 
 # Cloudflare sits in front of both APIs and rejects urllib's default
@@ -30,7 +32,11 @@ DEFAULT_TIMEOUT_SECONDS = 60
 # 2026-08-13: curl's own `curl/8.x` agent passes, so the block targets the
 # urllib signature specifically rather than demanding a browser. An honest
 # self-identifying agent is therefore enough; do not spoof a browser here.
-USER_AGENT = "hexact-cli/0.4.0 (+https://github.com/vecyang1/hexact-cli)"
+# Built from `__version__` rather than typed, because it was typed in two files
+# and a version bump updated neither. A User-Agent that lies about its version
+# is worse than an unversioned one: it makes a server-side log claim a release
+# that was never the one running.
+USER_AGENT = f"hexact-cli/{__version__} (+https://github.com/vecyang1/hexact-cli)"
 
 # Matches the credential in `?key=...` / `&key=...` regardless of position.
 _KEY_PATTERN = re.compile(r"([?&]key=)[^&\s]*")

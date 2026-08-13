@@ -81,6 +81,10 @@ Get the keys from the **API/Webhook** section of each dashboard's settings
 | `webhook set URL` / `show` / `clear ID` | Account-level webhook, fires for every monitor † |
 | `delete <ids…> --yes` | **Permanently delete** monitors † |
 | `retune <ids…> --level GE_5` | Change alert threshold or interval † |
+| `tags list` / `create` / `delete` / `set` | Monitor tags — REST has no tag concept at all † |
+| `list [--tag N] [--tool T] [--search S]` | Monitors with tool, interval and tags, filtered server-side † |
+| `noise [--since] [--until]` | Notification volume counted by the server, not by pulling every change † |
+| `alerts read --all` / `delete --id N --yes` | The dashboard's alert inbox † |
 
 **Mute is not pause.** A paused monitor stops checking and stops being a record
 of anything. A muted monitor keeps checking on schedule and keeps recording
@@ -133,13 +137,49 @@ Every write is confirmed by reading it back. A mutation answering
 
 `workflows`, `workflow <id>`, `logs <id>`, `enable`/`disable <ids…>`.
 
-**There is no endpoint that runs a workflow.** The API can list, read, toggle,
-and delete; triggering requires Hexomatic's own scheduler or an external
-integration.
+| Command | Purpose |
+| --- | --- |
+| `credits [--series]` | Automation credit burn — absent from REST entirely † |
+| `detail` | Workflows with per-run credit cost, schedule and status † |
+| `results <id> [--url]` | **What a workflow actually produced.** REST returns only its logs † |
+
+**There is no endpoint that runs a workflow.** Measured, not assumed: all 11
+fields of `HexomaticWorkflowOps` were enumerated and none of them is a run,
+execute or trigger. Triggering requires Hexomatic's own scheduler or an
+external integration.
 
 ### Hexometer — `hexact meter`
 
 `properties`, `health <property_id> [--status S]`, `errors <property_id> --tool-name T`.
+
+| Command | Purpose |
+| --- | --- |
+| `overview` | Every property with its open-issue counts † |
+| `issues [--page N] [--tool T]` | Detected issues, paged † |
+
+REST needs a **per-property** key and has no endpoint that lists properties, so
+`overview` is the only way to enumerate what the account monitors. Hexometer's
+*writes* — rescan, report generation, sub-property CRUD — exist on the gateway
+and are deliberately **not** wired: they consume scan quota and billable work,
+so `PropertyOps` stays in `graphql.FORBIDDEN_NAMESPACES`.
+
+### Hexospark — `hexact spark`
+
+| Command | Purpose |
+| --- | --- |
+| `contacts [--campaign ID] [--search T]` | CRM contacts with sent/opened/clicked/replied counters † |
+| `campaigns [--search T]` | Outreach campaigns with schedule, status and contact count † |
+
+**Hexospark publishes no REST API** — verified by control-diffing its
+documentation URLs against a page that cannot exist. That finding was right and
+incomplete: the shared gateway carries 24 Hexospark namespaces, so the product
+is undocumented rather than unreachable.
+
+**Read-only, on purpose.** `HexosparkCampaignOps` can create campaigns, attach
+contacts and add steps; those writes put mail in front of real people, which is
+not something a client an agent can drive unattended should do. The mutation
+allowlist refuses every Hexospark operation, so the boundary is enforced rather
+than intended, and a test pins it.
 
 ## Monitoring without notifications
 
@@ -203,8 +243,19 @@ a headline, a content monitor scoped to that element will not.
 
 ## Notes on the API
 
-Full endpoint reference in [docs/API.md](docs/API.md). The things that cost real
-debugging time:
+Full endpoint reference in [docs/API.md](docs/API.md), which links two generated
+companions: [docs/GATEWAY.md](docs/GATEWAY.md) (every namespace, field, argument
+and return type on the gateway) and [docs/TYPES.md](docs/TYPES.md) (the shape of
+each return type, with a paste-ready selection set). Both were recovered from
+validator error messages without credentials and without entering a resolver —
+`tools/schema_map.py` and `tools/type_map.py` regenerate them.
+
+`tools/validate_documents.py` checks every GraphQL document this client can send
+against the live schema, anonymously and inertly, by adding one field that
+cannot exist so validation fails before execution. That is how a mutation is
+proved well-formed without firing it at a real account.
+
+The things that cost real debugging time:
 
 - **HTTP 200 can carry a failure.** The envelope is `{"error": true, "message": …}`
   with a 200 status. Checking the status code alone accepts errors as data.
