@@ -72,9 +72,21 @@ Get the keys from the **API/Webhook** section of each dashboard's settings
 | `create --url U --tool T [--silent]` | Create a monitor |
 | `levels` | Valid `change_notification_level` per tool (offline) |
 | `integrations` | Notification channels and their IDs |
-| `show <id>` | A monitor's real config — tool, level, channels † |
+| `show <id>` | A monitor's real config — tool, level, interval, channels † |
+| `channels` | Account notification channels and their IDs † |
+| `mute <ids…>` | Stop an **existing** monitor notifying, without pausing it † |
+| `unmute <ids…> --channel ID` | Attach channels back † |
 | `delete <ids…> --yes` | **Permanently delete** monitors † |
 | `retune <ids…> --level GE_5` | Change alert threshold or interval † |
+
+**Mute is not pause.** A paused monitor stops checking and stops being a record
+of anything. A muted monitor keeps checking on schedule and keeps recording
+every change — it just stops routing them anywhere. If what you want is "keep
+tracking, stop telling me", `mute` is the only thing that says it.
+
+This is also the one thing the REST API cannot do at all: `notification_integrations`
+applies at creation time, and there is no REST update, so monitors that already
+exist were unreachable.
 
 † GraphQL-only. Needs `hexact auth login` — see below.
 

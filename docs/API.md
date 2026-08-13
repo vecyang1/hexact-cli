@@ -158,10 +158,33 @@ This is where delete and update live. Confirmed present by omitting required
 arguments, so GraphQL validation rejects the call before any resolver runs,
 against a control field that correctly read absent:
 
+One gateway carries the **whole suite**: 27 query and 21 mutation namespaces,
+recovered with the "Did you mean" oracle described below. Beyond `Watch*`
+there are `HexomaticWorkflow(Ops)`, `HexosparkCampaignOps`
+(`create` `update` `createSteps` `addContacts` `deleteAll`),
+`HexosparkCrmContactOps` (`create` `update` `updateBulk` `move`),
+`Hexospark{Common,Tag,User}Ops`, `HexometerIssuesOps`, `Scraper`, `Keyword`,
+`Task`, `Shortlink`, `Alert`, `Billing`, `Admin`.
+
+**"Hexospark has no API" is true only of REST.** Its CRM and campaign
+mutations are on this gateway. That correction matters because the earlier
+verdict was recorded without the qualifier.
+
+`WatchOps` in full: `createWatchProperty` `updateWatchProperty`
+`updateWatchProperties` `deleteWatchProperty` `deleteWatchProperties`
+`subscribeWebhook` `updateWebhook` `exportAll` `adminDelete`.
+
 | Operation | Signature |
 | --- | --- |
 | `WatchOps.deleteWatchProperty` | `(watch_property_id: Int!)` |
 | `WatchOps.deleteWatchProperties` | `(watch_properties_ids: [Int]!)` |
+| `WatchOps.createWatchProperty` | `(address: String!, tool: String!, tool_settings: WatchToolSettingsMapping!, monitoring_interval: String!, pause_after_first_change_event: Boolean!)` |
+| `WatchOps.subscribeWebhook` | `(webhookUrl: String!, watch_property_id: Int!)` — **per monitor**, not account-level |
+| `WatchOps.updateWebhook` | `(subscriptionId: String!, updateWebhook: String!, watch_property_id: Int!)` |
+| `WatchOps.exportAll` | no required arguments |
+| `WatchIntegrationOps.updateWatchPropertyIntegrations` | `(watch_property_id: Int!, watch_integration_ids: [Int]!)` — **empty list = mute** |
+| `WatchIntegrationOps.deleteWatchPropertyIntegration` | `(watch_property_id: Int!, watch_integration_id: Int!)` |
+| `WatchIntegrationOps.deleteWatchIntegration` | `(watch_integration_id: Int!)` — account-wide |
 | `WatchOps.updateWatchProperty` | `(watch_property_id, active, monitoring_interval, change_notification_level, pause_after_first_change_event, name, alert_notification_settings, scheduling_settings, tool_settings)` |
 | `WatchOps.updateWatchProperties` | `(watch_properties_ids: [Int]!, active, monitoring_interval, change_notification_level, tags, watch_integration_ids, tool_settings)` |
 
@@ -183,6 +206,32 @@ UserOps.authAccessToken(refreshToken: String!)              -> { token }
 
 The access token goes in an `authorization` header. That is strictly safer than
 the REST scheme, which puts a live credential in every URL.
+
+### The trap: a deleted monitor still resolves
+
+`getWatchProperty` on an id that no longer exists returns **HTTP 200 with a
+normal object whose every field is null** — not an error, not an empty result.
+So "the read-back succeeded" means nothing on its own, and a client that reads
+absence as an exception reports a successful delete as a failure. Measured
+2026-08-13: `watch delete` printed `STILL PRESENT` and exited 1 while the
+monitor count went 49 → 48.
+
+The mirror of it is worse. Treating *any* exception as proof of absence makes
+an expired token, or a malformed selection set, confirm every deletion — both
+observed in the same session, the second because a newly added `tags` field was
+selected as a scalar and returned HTTP 400. **Absence is a query that succeeds
+and returns a null `id`.** Nothing else counts.
+
+Selecting object fields as scalars is a recurring shape here: `tags`
+(`[WatchTagType]`), `email` (`UserWatchSettingsEmailType`) and
+`properties_status` all need subfield selections and answer HTTP 400 otherwise.
+
+### Also selectable on WatchProperty
+
+`monitoring_interval` `tags { id name }` `alertCount` `tool_settings`
+`scheduling_settings` `webhooks`, none of which the first client selected —
+which is why `retune --interval` could "confirm" a write by reading a field it
+had never changed.
 
 ### The trap: null is an auth failure, not empty data
 
