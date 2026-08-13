@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -42,9 +43,32 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default="/tmp/hexact-schema/hexowatch.json")
     parser.add_argument("--out", default="docs/GATEWAY.md")
+    parser.add_argument(
+        "--allow-resolver-entry", action="store_true",
+        help="render even if the walk entered resolvers (unsafe; only with cause)",
+    )
     args = parser.parse_args()
 
     data = json.loads(Path(args.input).read_text(encoding="utf-8"))
+
+    # Ship gate. The whole claim of this reference is that it was recovered
+    # WITHOUT side effects; a walk that entered resolvers did not honour that,
+    # so rendering it would print a false provenance. Refuse by default. This is
+    # decidable and cheap, and it has already caught a real regression (a type
+    # probe that dropped the bogus-argument guard entered 34 resolvers).
+    resolvers = data.get("resolvers_entered") or []
+    if resolvers and not args.allow_resolver_entry:
+        print(
+            f"REFUSING to render {args.out}: {len(resolvers)} resolver(s) were "
+            f"entered during this walk, so it is not provably side-effect-free.\n"
+            f"  first few: {resolvers[:5]}\n"
+            f"Fix tools/schema_map.py so EVERY probe carries the bogus argument, "
+            f"re-run the walk, and render the clean result. Override with "
+            f"--allow-resolver-entry only if you understand exactly why.",
+            file=sys.stderr,
+        )
+        return 2
+
     namespaces = data["namespaces"]
 
     grouped: dict[str, list[tuple[str, str, dict]]] = defaultdict(list)

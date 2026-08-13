@@ -935,3 +935,95 @@ class TestGatewayDocCoversWhatTheCodeUses(unittest.TestCase):
 
     def test_the_reference_records_the_no_execute_guarantee(self):
         self.assertIn("resolvers entered", self.text.lower())
+
+
+class _TrapGateway:
+    """A gateway that 'enters a resolver' for any probe missing the guard.
+
+    Faithful to the one property that matters: a probe carrying the bogus
+    argument fails GraphQL validation, so the server returns ``errors`` with no
+    ``data`` (inert). A probe *without* it, naming only a valid optional
+    argument, is a valid document and the resolver runs -- modelled here by
+    returning a non-null ``data``. So ``resolver_was_entered`` flips iff a probe
+    dropped the guard, which is exactly the regression to catch.
+    """
+
+    BOGUS = "zzzNotAnArg"
+
+    def __init__(self):
+        self.documents: list[str] = []
+
+    def messages(self, payload):  # mirrors schema_map.Gateway.messages
+        return [e.get("message", "") for e in (payload.get("errors") or [])]
+
+    def post(self, document: str) -> dict:
+        self.documents.append(document)
+        if self.BOGUS not in document:
+            # An unguarded, otherwise-valid document reaches the resolver.
+            return {"data": {"TestOps": {"doThing": None}}}
+        msgs = ['Unknown argument "zzzNotAnArg" on field "doThing" of type "TestOps".']
+        if "__typename" not in document:  # the base probe carries the return type
+            msgs.append('Field "doThing" of type "BaseMutationResponse" '
+                        'must have a selection of subfields.')
+        else:  # discovery/type probes surface an optional arg and its type
+            msgs.append('Unknown argument "x" on field "doThing" of type '
+                        '"TestOps". Did you mean "note"?')
+        if "123" in document:
+            msgs.append("Expected type String, found 123.")
+        return {"errors": [{"message": m} for m in msgs]}
+
+
+class TestSchemaMapNeverEntersAResolver(unittest.TestCase):
+    """Rung-4 lock on the safety invariant that broke.
+
+    An earlier `describe_field` guarded only its base probe; the argument-type
+    probe `field(realOptionalArg: "zZq")` was a valid document and entered 34
+    resolvers on the live gateway. The guard now applies to every probe shape;
+    this test fails the moment any shape drops it again -- decidable, offline,
+    and independent of the live API.
+    """
+
+    def setUp(self):
+        import importlib.util
+        path = Path(__file__).resolve().parent.parent / "tools" / "schema_map.py"
+        if not path.is_file():
+            self.skipTest("tools/schema_map.py not present in this checkout")
+        spec = importlib.util.spec_from_file_location("schema_map", path)
+        self.schema_map = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.schema_map)
+
+    def test_every_probe_carries_the_bogus_argument_and_nothing_executes(self):
+        from concurrent.futures import ThreadPoolExecutor
+        trap = _TrapGateway()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            result = self.schema_map.describe_field(
+                trap, "TestOps", "doThing", "mutation", pool)
+
+        self.assertTrue(trap.documents, "no probes were sent")
+        missing = [d for d in trap.documents if _TrapGateway.BOGUS not in d]
+        self.assertEqual(
+            missing, [],
+            f"{len(missing)} probe(s) dropped the bogus-argument guard, e.g. "
+            f"{missing[:1]} -- an unguarded probe can enter a live resolver",
+        )
+        self.assertFalse(
+            result["resolver_was_entered"],
+            "describe_field entered a resolver against the trap gateway",
+        )
+        # The guard must not cost recovery: return type and the optional arg
+        # (with its type, read from the guarded 123 probe) still come back.
+        self.assertEqual(result["returns"], "BaseMutationResponse")
+        self.assertIn("note", [a["name"] for a in result["optional_arguments"]])
+        self.assertEqual(
+            "String",
+            next(a["type"] for a in result["optional_arguments"]
+                 if a["name"] == "note"),
+        )
+
+    def test_the_trap_would_catch_a_dropped_guard(self):
+        """Prove the trap is not vacuous: an unguarded doc DOES flip to data."""
+        trap = _TrapGateway()
+        guarded = trap.post("mutation { TestOps { doThing(note: 123, zzzNotAnArg: 1) } }")
+        unguarded = trap.post("mutation { TestOps { doThing(note: 123) } }")
+        self.assertIsNone(guarded.get("data"))
+        self.assertIsNotNone(unguarded.get("data"))

@@ -301,7 +301,19 @@ def describe_field(
     understated the API rather than merely being terse. And **argument types**,
     from `Expected type T, found ...` when a value of the wrong type is sent.
 
-    Every probe still carries a bogus argument, so nothing executes.
+    Every probe here carries the bogus argument -- the base signature probe, the
+    argument-name discovery probes, and the argument-type probes alike. That is
+    load-bearing and was learned the hard way. An earlier version of this
+    function guarded only the base probe; the type probe
+    `field(realOptionalArg: "zZq")` is a *valid* document for any field whose
+    remaining arguments are all optional, so it entered 34 resolvers on a live
+    gateway (`forgotPassword`, `updateWebhook`, `updateWatchProperty`, ...). Every
+    request was anonymous and every value was garbage (`"zZq"` / `123`), so no
+    account was touched -- but the inert *guarantee* was broken, which is the
+    thing this file exists to keep. The `resolver_was_entered` self-check caught
+    it and `main` reports it loudly; `render_gateway_doc.py` now refuses to
+    render a walk whose `resolvers_entered` is non-empty. A guard proven on one
+    probe shape does not extend to probe shapes added later -- guard every shape.
     """
     # No selection set on purpose. `{ __typename }` satisfies the leaf rule, so
     # the server never emits `must have a selection of subfields` and the return
@@ -343,7 +355,7 @@ def describe_field(
         if not frontier:
             break
         documents = [
-            f"{kind} {{ {namespace} {{ {field}({probe}: 1) {{ __typename }} }} }}"
+            f"{kind} {{ {namespace} {{ {field}({probe}: 1, {BOGUS_ARG}) {{ __typename }} }} }}"
             for probe in frontier
         ]
         found: set[str] = set()
@@ -365,7 +377,7 @@ def describe_field(
         if not pending:
             break
         documents = [
-            f"{kind} {{ {namespace} {{ {field}({name}: {literal}) {{ __typename }} }} }}"
+            f"{kind} {{ {namespace} {{ {field}({name}: {literal}, {BOGUS_ARG}) {{ __typename }} }} }}"
             for name in pending
         ]
         for name, payload in zip(pending, pool.map(gateway.post, documents)):
