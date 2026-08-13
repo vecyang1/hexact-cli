@@ -232,25 +232,70 @@ def _normalise_address(address: str) -> str:
     return host.lower() + (f"/{path}" if path else "")
 
 
-def cmd_duplicates(args: argparse.Namespace) -> int:
-    """Group monitors that watch the same address.
+def resolve_tool_from_payload(payload: dict[str, Any]) -> str | None:
+    """The ``tool`` carried by a ``monitoring_logs`` envelope, or ``None``.
 
-    Duplicates cost twice: they burn the monthly check allowance, and they
-    multiply every notification. Hexowatch's API exposes no delete endpoint, so
-    the actionable remedy is to pause the redundant ones -- which this command
-    prints as a ready-to-run command rather than performing on its own.
+    Returns ``None`` rather than a placeholder when the tool is absent, because
+    the caller must be able to tell "no tool" apart from "some tool" -- a
+    monitor with no scan history yet would otherwise group with every other
+    unscanned monitor and be reported as a duplicate of it.
+    """
+    tool = payload.get("tool")
+    return str(tool) if tool else None
+
+
+def resolve_tool(key: str, monitoring_id: Any) -> str | None:
+    """The tool a monitor runs, or ``None`` when it cannot be established.
+
+    ``v1/monitored_urls`` returns only ``id``, ``address``, ``name`` and
+    ``paused`` -- the tool is not among them, and there is no monitor-detail
+    endpoint (measured: ``GET v1/monitored_urls/{id}`` is a 404). The only place
+    the tool surfaces is the ``monitoring_logs`` envelope, so establishing it
+    costs one request per monitor.
+    """
+    try:
+        payload = hexowatch.monitoring_logs(key, int(monitoring_id), limit=1)
+    except (HexactAPIError, ValueError, TypeError):
+        return None
+    return resolve_tool_from_payload(payload)
+
+
+def cmd_duplicates(args: argparse.Namespace) -> int:
+    """Group monitors that watch the same address *with the same tool*.
+
+    Address alone is the wrong key and produces confidently destructive advice.
+    Measured against the live account on 2026-08-13: grouping by address
+    reported 18 redundant monitors out of 48; grouping by address **and** tool
+    found **1**. The other 17 were the same page watched by different tools --
+    visual, sitemap, techStack, automaticAI -- which is a deliberate
+    configuration, not duplication. Acting on the address-only answer would have
+    paused real coverage.
+
+    Establishing the tool costs one extra request per monitor (see
+    :func:`resolve_tool`). Correctness is worth the requests: the output of this
+    command is a list of things to switch off.
+
+    Hexowatch exposes no delete endpoint, so the remedy printed is a pause
+    command -- and it is printed, not executed.
     """
     key = resolve_key(HEXOWATCH)
     monitors = _rows(hexowatch.list_monitored_urls(key), "monitored_urls", "data", "urls")
 
-    groups: dict[str, list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    unresolved: list[dict[str, Any]] = []
     for monitor in monitors:
         address = monitor.get("address")
         if not address:
             continue
-        groups.setdefault(_normalise_address(str(address)), []).append(monitor)
+        tool = resolve_tool(key, monitor.get("id"))
+        if tool is None:
+            # Fail safe: never call a monitor redundant when we could not
+            # establish what it does.
+            unresolved.append({"id": monitor.get("id"), "address": address})
+            continue
+        groups.setdefault((_normalise_address(str(address)), tool), []).append(monitor)
 
-    duplicates = {addr: rows for addr, rows in groups.items() if len(rows) > 1}
+    duplicates = {pair: rows for pair, rows in groups.items() if len(rows) > 1}
     redundant = [
         # Keep the lowest id in each group -- the oldest monitor holds the
         # longest change history, which is the one worth preserving.
@@ -260,29 +305,39 @@ def cmd_duplicates(args: argparse.Namespace) -> int:
     ]
     result = {
         "monitors": len(monitors),
+        "compared": len(monitors) - len(unresolved),
         "duplicate_groups": len(duplicates),
         "redundant_monitors": len(redundant),
         "redundant_ids": [m.get("id") for m in redundant],
         "groups": [
-            {"address": addr, "ids": [m.get("id") for m in sorted(rows, key=lambda m: m.get("id") or 0)]}
-            for addr, rows in sorted(duplicates.items())
+            {
+                "address": addr,
+                "tool": tool,
+                "ids": [m.get("id") for m in sorted(rows, key=lambda m: m.get("id") or 0)],
+            }
+            for (addr, tool), rows in sorted(duplicates.items())
         ],
+        "unresolved": unresolved,
     }
 
     def render(data: dict[str, Any]) -> None:
+        scope = f"{data['compared']} of {data['monitors']} monitors"
         if not data["duplicate_groups"]:
-            print(f"No duplicates among {data['monitors']} monitors.")
-            return
-        print(f"{data['duplicate_groups']} duplicate group(s) across "
-              f"{data['monitors']} monitors; {data['redundant_monitors']} redundant:\n")
-        for group in data["groups"]:
-            keep, *drop = group["ids"]
-            print(f"  {group['address']}")
-            print(f"      keep {keep}  |  redundant: {', '.join(map(str, drop))}")
-        if data["redundant_ids"]:
+            print(f"No duplicates among {scope} "
+                  f"(same address AND same tool).")
+        else:
+            print(f"{data['duplicate_groups']} duplicate group(s) across {scope}; "
+                  f"{data['redundant_monitors']} redundant:\n")
+            for group in data["groups"]:
+                keep, *drop = group["ids"]
+                print(f"  {group['address']}  [{group['tool']}]")
+                print(f"      keep {keep}  |  redundant: {', '.join(map(str, drop))}")
             ids = " ".join(str(i) for i in data["redundant_ids"])
             print(f"\n  Hexowatch has no delete endpoint. To stop the extra checks "
                   f"and notifications:\n    hexact watch pause {ids}")
+        for row in data["unresolved"]:
+            print(f"  ! tool unknown, not compared: {row['id']} {row['address']}",
+                  file=sys.stderr)
 
     _emit(result, args.json, render)
     return EXIT_OK

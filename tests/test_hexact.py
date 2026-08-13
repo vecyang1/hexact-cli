@@ -9,6 +9,7 @@ under test. Individual tests opt back in with ``mock.patch.dict``.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import http.client
 import io
@@ -29,10 +30,10 @@ _MANAGED_VARS = (
 for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
 
-from hexact import config, hexomatic, hexowatch  # noqa: E402
+from hexact import cli, config, hexomatic, hexowatch  # noqa: E402
 from hexact.cli import (  # noqa: E402
     _is_paused, _normalise_address, _parse_timestamp, _rows, _state_label,
-    main, parse_since,
+    main, parse_since, resolve_tool_from_payload,
 )
 from hexact.http import HexactAPIError, redact, request  # noqa: E402
 
@@ -382,6 +383,97 @@ class TestDuplicateDetection(unittest.TestCase):
         self.assertNotEqual(
             _normalise_address("https://meetup.com/g/?eventOrigin=event_home_page"),
             _normalise_address("https://meetup.com/g/"),
+        )
+
+
+class TestSameAddressDifferentToolIsNotADuplicate(unittest.TestCase):
+    """The address is not the identity of a monitor; (address, tool) is.
+
+    These four records are verbatim from the live account on 2026-08-13.
+    Grouping them by address alone reported 18 redundant monitors out of 48
+    when only 1 was real -- a 94% false-positive rate on a command whose output
+    is a list of monitors to switch off. Acting on it would have paused real
+    coverage, and nothing would have errored.
+    """
+
+    LIVE = [
+        {"id": 285431, "address": "https://info.littleboattan.com/", "tool": "sitemapTool"},
+        {"id": 285438, "address": "https://info.littleboattan.com/", "tool": "visualMonitoringTool"},
+        {"id": 302407, "address": "https://info.littleboattan.com/", "tool": "techStackTool"},
+        # The one true duplicate on the account: same page, same tool, twice.
+        {"id": 337079, "address": "https://www.meetup.com/g/?eventOrigin=event_home_page",
+         "tool": "visualMonitoringTool"},
+        {"id": 337094, "address": "https://www.meetup.com/g/?eventOrigin=event_home_page",
+         "tool": "visualMonitoringTool"},
+    ]
+
+    def _run_duplicates(self):
+        """Drive the real ``cmd_duplicates`` over the live payloads.
+
+        Deliberately not a re-implementation of the grouping: an earlier version
+        of this test computed the answer itself and passed even when the
+        production key was mutated back to address-only, which is the exact
+        defect it claims to guard.
+        """
+        tools = {row["id"]: row["tool"] for row in self.LIVE}
+        monitors = {"error": False, "monitored_urls": [
+            {"id": r["id"], "address": r["address"], "name": r["address"], "paused": False}
+            for r in self.LIVE
+        ]}
+        with mock.patch.object(cli.hexowatch, "list_monitored_urls", return_value=monitors), \
+             mock.patch.object(cli.hexowatch, "monitoring_logs",
+                               side_effect=lambda key, mid, **kw: {
+                                   "error": False, "tool": tools[int(mid)],
+                                   "monitoring_results": []}), \
+             mock.patch.object(cli, "resolve_key", return_value="k"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli.cmd_duplicates(argparse.Namespace(json=True))
+        return json.loads(buf.getvalue())
+
+    def test_only_the_real_duplicate_is_reported(self):
+        data = self._run_duplicates()
+        self.assertEqual(data["redundant_monitors"], 1)
+        # The lower id is kept: it is the older monitor and holds the longer
+        # change history, so the newer twin is the one to switch off.
+        self.assertEqual(data["redundant_ids"], [337094])
+        self.assertEqual(data["compared"], 5)
+
+    def test_same_page_under_different_tools_is_not_redundant(self):
+        data = self._run_duplicates()
+        flagged = set(data["redundant_ids"])
+        for monitor_id in (285431, 285438, 302407):
+            self.assertNotIn(monitor_id, flagged)
+
+    def test_a_monitor_whose_tool_is_unknown_is_excluded_not_grouped(self):
+        monitors = {"error": False, "monitored_urls": [
+            {"id": 1, "address": "https://a.com", "name": "a", "paused": False},
+            {"id": 2, "address": "https://a.com", "name": "a", "paused": False},
+        ]}
+        with mock.patch.object(cli.hexowatch, "list_monitored_urls", return_value=monitors), \
+             mock.patch.object(cli.hexowatch, "monitoring_logs",
+                               return_value={"error": False, "monitoring_results": []}), \
+             mock.patch.object(cli, "resolve_key", return_value="k"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli.cmd_duplicates(argparse.Namespace(json=True))
+        data = json.loads(buf.getvalue())
+        self.assertEqual(data["redundant_monitors"], 0)
+        self.assertEqual(data["compared"], 0)
+        self.assertEqual(len(data["unresolved"]), 2)
+
+    def test_unknown_tool_never_groups(self):
+        """A monitor with no scan history has no tool, and must not be paired.
+
+        Returning a placeholder here would make every unscanned monitor a
+        duplicate of every other unscanned monitor.
+        """
+        self.assertIsNone(
+            resolve_tool_from_payload({"error": False, "monitoring_results": []})
+        )
+        self.assertEqual(
+            resolve_tool_from_payload({"error": False, "tool": "sitemapTool"}),
+            "sitemapTool",
         )
 
 
