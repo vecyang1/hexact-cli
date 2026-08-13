@@ -53,6 +53,14 @@ MUTATION_ALLOWLIST = frozenset({
     "WatchOps.deleteWatchProperties",
     "WatchOps.updateWatchProperty",
     "WatchOps.updateWatchProperties",
+    # Notification routing. `updateWatchPropertyIntegrations` with an empty list
+    # is the only way to silence a monitor that already exists -- the REST
+    # `notification_integrations: []` field applies at creation time and there
+    # is no REST update, so 48 existing noisy monitors were unreachable without
+    # this one mutation.
+    "WatchIntegrationOps.updateWatchPropertyIntegrations",
+    "WatchIntegrationOps.deleteWatchPropertyIntegration",
+    "WatchIntegrationOps.deleteWatchIntegration",
 })
 
 # Namespaces that must never be reachable, listed explicitly so the intent
@@ -246,11 +254,15 @@ def mutate(
 # These queries are the only way to see what a monitor is actually configured to
 # do -- which is also what makes a write verifiable afterwards.
 
+# `monitoring_interval` is not decoration: without it, `watch retune --interval`
+# could only read back `change_notification_level` and would report "confirmed"
+# after verifying a field it had not changed. Select what the writes write.
 WATCH_PROPERTY_QUERY = """
 query($watch_property_id: Int!) {
   Watch {
     getWatchProperty(watch_property_id: $watch_property_id) {
-      id name url active change_notification_level createdAt tool
+      id name url active change_notification_level monitoring_interval
+      createdAt tool alertCount tags { id name }
     }
   }
 }
@@ -260,6 +272,16 @@ WATCH_INTEGRATIONS_QUERY = """
 query($watch_property_id: Int!) {
   WatchIntegration {
     getWatchPropertyIntegrations(watch_property_id: $watch_property_id) {
+      integrations { id type slackIntegration email { email enabled verified } }
+    }
+  }
+}
+"""
+
+USER_INTEGRATIONS_QUERY = """
+query {
+  WatchIntegration {
+    getUserIntegrations {
       integrations { id type slackIntegration email { email enabled verified } }
     }
   }
@@ -290,6 +312,12 @@ def get_watch_property_integrations(token: str, monitoring_id: int) -> Any:
         WATCH_INTEGRATIONS_QUERY, {"watch_property_id": int(monitoring_id)}, token=token
     )
     return unwrap(data, "WatchIntegration", "getWatchPropertyIntegrations")
+
+
+def get_user_integrations(token: str) -> Any:
+    """Every notification channel on the account, with its id and type."""
+    data = execute(USER_INTEGRATIONS_QUERY, token=token)
+    return unwrap(data, "WatchIntegration", "getUserIntegrations")
 
 
 def get_statistics(token: str) -> dict[str, Any]:
@@ -327,5 +355,62 @@ def update_monitors(
             "monitoring_interval": ("String", monitoring_interval),
             "active": ("Boolean", active),
         },
+        token=token,
+    )
+
+
+def set_monitor_integrations(
+    token: str, monitoring_id: int, integration_ids: list[int]
+) -> dict[str, Any]:
+    """Replace one monitor's notification channels with exactly this list.
+
+    An **empty list mutes the monitor**: it keeps checking and keeps recording
+    changes, and stops routing them anywhere. That is the distinction the
+    account owner actually wanted -- "keep tracking, stop telling me" -- and it
+    was unreachable before, because the REST API can only set channels at
+    creation time.
+
+    The list is a replacement, not a delta. Read the current channels first if
+    the intent is to remove only one; :func:`detach_monitor_integration` does
+    that without a read.
+    """
+    return mutate(
+        "WatchIntegrationOps.updateWatchPropertyIntegrations",
+        {
+            "watch_property_id": ("Int!", int(monitoring_id)),
+            # `[]` must survive to the wire. `mutate` filters on `is not None`
+            # rather than truthiness precisely so that this empty list is sent
+            # rather than silently dropped -- dropping it would turn "mute" into
+            # "change nothing" and report success.
+            "watch_integration_ids": ("[Int]!", [int(i) for i in integration_ids]),
+        },
+        token=token,
+    )
+
+
+def detach_monitor_integration(
+    token: str, monitoring_id: int, integration_id: int
+) -> dict[str, Any]:
+    """Remove one channel from one monitor, leaving its others in place."""
+    return mutate(
+        "WatchIntegrationOps.deleteWatchPropertyIntegration",
+        {
+            "watch_property_id": ("Int!", int(monitoring_id)),
+            "watch_integration_id": ("Int!", int(integration_id)),
+        },
+        token=token,
+    )
+
+
+def delete_integration(token: str, integration_id: int) -> dict[str, Any]:
+    """Delete a notification channel **account-wide**.
+
+    Wider than it looks: this removes the channel from every monitor using it,
+    not just the one in front of you. Use :func:`detach_monitor_integration` for
+    a single monitor.
+    """
+    return mutate(
+        "WatchIntegrationOps.deleteWatchIntegration",
+        {"watch_integration_id": ("Int!", int(integration_id))},
         token=token,
     )

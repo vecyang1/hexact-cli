@@ -32,18 +32,32 @@ from pathlib import Path
 from typing import Any
 
 from . import graphql
-from .config import HEXOWATCH_SESSION, CredentialError, credentials_path, resolve_key
+from .config import (
+    HEXOWATCH_ACCESS,
+    HEXOWATCH_SESSION,
+    CredentialError,
+    credentials_path,
+    resolve_key,
+)
 
 # Writing an item is not gated on a biometric prompt for a service account, but
 # it is for an interactive one. A bounded wait turns "hung forever in cron" into
 # a clear failure, matching hexact/config.py's read timeout.
 _OP_WRITE_TIMEOUT_SECONDS = 30
 
+# `UserLoginResponse` carries BOTH `token` and `refresh_token`, and they are
+# not interchangeable. `token` is a short-lived JWT usable directly in the
+# `authorization` header; `refresh_token` is the long-lived one that
+# `authAccessToken` accepts. Selecting only `token` here and persisting it
+# produced a credential that worked for about an hour and then could never be
+# renewed -- `authAccessToken` answered `error: false` with every field null,
+# which is this gateway's house style for "no" and is indistinguishable from
+# success unless you check the token itself.
 _REFRESH_MUTATION = """
 mutation($email: String!, $password: String!) {
   UserOps {
     authRefreshToken(email: $email, password: $password) {
-      token error message
+      token refresh_token error message
     }
   }
 }
@@ -72,7 +86,9 @@ class LoginError(RuntimeError):
     """Login was refused, or returned no token."""
 
 
-def _token_from_response(data: dict[str, Any], field: str) -> str:
+def _token_from_response(
+    data: dict[str, Any], field: str, *, field_name: str = "token"
+) -> str:
     result = (data.get("UserOps") or {}).get(field)
     if not isinstance(result, dict):
         raise LoginError(
@@ -81,23 +97,37 @@ def _token_from_response(data: dict[str, Any], field: str) -> str:
         )
     if result.get("error"):
         raise LoginError(str(result.get("message") or "login refused"))
-    token = result.get("token")
+    token = result.get(field_name)
     if not token:
+        # Carry the remedy, not just the diagnosis. This exact error was hit
+        # with a *valid* credential stored in the wrong field, and the old
+        # message sent the reader looking for an expired token instead.
         raise LoginError(
-            f"UserOps.{field} reported success but returned no token. Treating "
-            "that as a failure rather than continuing with an empty credential."
+            f"UserOps.{field} reported success but returned no {field_name!r}. "
+            "Treating that as a failure rather than continuing with an empty "
+            "credential.\n"
+            "  Most likely cause: the stored value is an access token, not a "
+            "refresh token. They are different fields on UserLoginResponse and "
+            "only the refresh token can be exchanged.\n"
+            "  Fix: re-run `hexact auth login` (this build stores the right "
+            "one), or set HEXOWATCH_ACCESS_TOKEN to use an access token "
+            "directly for the next hour."
         )
     return str(token)
 
 
 def login(email: str, password: str) -> str:
-    """Exchange credentials for a refresh token.
+    """Exchange credentials for a **refresh** token.
 
     ``password`` is used for exactly this call and is never stored, logged, or
     echoed. Callers should source it from :func:`prompt_password`.
+
+    Returns ``refresh_token``, not ``token``. Returning the latter is the bug
+    this function exists to not have: it authenticates, so every check passes,
+    and it stops working an hour later with no way to renew it.
     """
     data = graphql.execute(_REFRESH_MUTATION, {"email": email, "password": password})
-    return _token_from_response(data, "authRefreshToken")
+    return _token_from_response(data, "authRefreshToken", field_name="refresh_token")
 
 
 def access_token(refresh_token: str | None = None) -> str:
@@ -106,6 +136,15 @@ def access_token(refresh_token: str | None = None) -> str:
     Never persisted: an access token on disk is a liability with no benefit,
     since minting a fresh one costs a single request.
     """
+    # An access token supplied directly wins: it needs no exchange, and it lets
+    # a caller hold the narrower of the two credentials. Only consulted when no
+    # explicit refresh token was passed in, so tests stay deterministic.
+    if refresh_token is None:
+        try:
+            return resolve_key(HEXOWATCH_ACCESS)
+        except CredentialError:
+            pass
+
     refresh = refresh_token or resolve_key(HEXOWATCH_SESSION)
     data = graphql.execute(_ACCESS_MUTATION, {"refreshToken": refresh})
     return _token_from_response(data, "authAccessToken")
@@ -229,15 +268,17 @@ def status() -> tuple[str, str]:
     network failure is not evidence about a credential, and reporting it as one
     is how a working token gets needlessly rotated.
     """
+    # Ask for a credential the same way the real commands do, instead of
+    # re-implementing the ladder. Checking only HEXOWATCH_SESSION made `status`
+    # report "missing" on a session where every other command worked off
+    # HEXOWATCH_ACCESS_TOKEN -- a health check that says broken while the thing
+    # it checks is fine trains people to ignore it.
     try:
-        refresh = resolve_key(HEXOWATCH_SESSION)
+        token = access_token()
     except CredentialError as exc:
         return "missing", str(exc)
-
-    try:
-        token = access_token(refresh)
     except LoginError as exc:
-        return "rejected", f"refresh token was not accepted: {exc}"
+        return "rejected", f"stored token was not accepted: {exc}"
     except graphql.AuthError as exc:
         return "rejected", str(exc)
     except graphql.HexactAPIError as exc:

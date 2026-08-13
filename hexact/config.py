@@ -43,17 +43,25 @@ HEXOMETER = "hexometer"
 # mitigation, and it is enforced in code rather than by convention.
 HEXOWATCH_SESSION = "hexowatch_session"
 
+# A already-minted access token, used as-is without an exchange. Two callers
+# need this: CI, which should be handed a short-lived credential rather than a
+# refresh token that reaches the whole account, and anyone recovering from a
+# login that stored the wrong field -- see `auth.login`.
+HEXOWATCH_ACCESS = "hexowatch_access"
+
 _ENV_VARS = {
     HEXOWATCH: "HEXOWATCH_API_KEY",
     HEXOMATIC: "HEXOMATIC_API_KEY",
     HEXOMETER: "HEXOMETER_API_KEY",
     HEXOWATCH_SESSION: "HEXOWATCH_REFRESH_TOKEN",
+    HEXOWATCH_ACCESS: "HEXOWATCH_ACCESS_TOKEN",
 }
 _OP_REF_VARS = {
     HEXOWATCH: "HEXOWATCH_OP_REF",
     HEXOMATIC: "HEXOMATIC_OP_REF",
     HEXOMETER: "HEXOMETER_OP_REF",
     HEXOWATCH_SESSION: "HEXOWATCH_REFRESH_OP_REF",
+    HEXOWATCH_ACCESS: "HEXOWATCH_ACCESS_OP_REF",
 }
 
 # `op read` blocks on a biometric prompt when it has to unlock interactively.

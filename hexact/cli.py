@@ -635,8 +635,12 @@ def cmd_watch_show(args: argparse.Namespace) -> int:
 
     def render(data: dict[str, Any]) -> None:
         for field in ("id", "name", "url", "tool", "active",
-                      "change_notification_level", "createdAt"):
+                      "change_notification_level", "monitoring_interval",
+                      "alertCount", "createdAt"):
             print(f"  {field:28} {data.get(field)}")
+        tags = data.get("tags") or []
+        if tags:
+            print(f"  {'tags':28} {', '.join(t.get('name', '') for t in tags)}")
         channels = (data.get("integrations") or {}).get("integrations")
         if channels is None:
             print(f"  {'integrations':28} unavailable: {data.get('integrations_error')}")
@@ -649,6 +653,109 @@ def cmd_watch_show(args: argparse.Namespace) -> int:
 
     _emit(monitor, args.json, render)
     return EXIT_OK
+
+
+def cmd_watch_channels(args: argparse.Namespace) -> int:
+    """Every notification channel on the account, and what it is.
+
+    Worth running before any mute: the account had two *separate* email
+    channels registered, which means every alert was delivered twice and
+    halving the noise needed no configuration change at all.
+    """
+    token = auth.access_token()
+    result = graphql.get_user_integrations(token)
+    channels = (result or {}).get("integrations") or []
+
+    def render(data: dict[str, Any]) -> None:
+        rows = data.get("integrations") or []
+        if not rows:
+            print("No notification channels registered.")
+            return
+        print(f"{len(rows)} channel(s):\n")
+        for row in rows:
+            # `email` is an object here, not a string -- selecting it as a
+            # scalar is an HTTP 400, which is how this was found.
+            email = (row.get("email") or {}).get("email") or ""
+            label = row.get("slackIntegration") or email
+            print(f"  [{row.get('id')}] {str(row.get('type')):8} {label}")
+        emails = [r for r in rows if str(r.get("type")).lower() == "email"]
+        if len(emails) > 1:
+            print(f"\n  {len(emails)} separate email channels are registered, so any "
+                  f"monitor attached to both is alerting you twice.")
+
+    _emit({"integrations": channels}, args.json, render)
+    return EXIT_OK
+
+
+def cmd_watch_mute(args: argparse.Namespace) -> int:
+    """Silence monitors that already exist, or restore their channels.
+
+    The distinction this command exists for: muting is *not* pausing. A paused
+    monitor stops checking, loses its history continuity, and stops being a
+    record of anything. A muted monitor keeps checking on schedule and keeps
+    recording every change -- it just stops routing them to a channel. "Keep
+    tracking, stop notifying" is only expressible this way.
+
+    Unmute takes explicit channel ids rather than restoring a remembered set:
+    the previous set is not stored anywhere, and inventing one would be worse
+    than asking.
+    """
+    token = auth.access_token()
+    targets = [int(i) for i in args.ids]
+    channel_ids = [] if args.mute else [int(i) for i in args.channels]
+
+    if not args.mute and not channel_ids:
+        raise ValueError(
+            "unmute needs at least one --channel id. Run `hexact watch channels` "
+            "to list them; there is no stored record of what a monitor used to "
+            "notify, so it cannot be restored automatically."
+        )
+
+    results = []
+    for monitoring_id in targets:
+        entry: dict[str, Any] = {"id": monitoring_id}
+        try:
+            graphql.set_monitor_integrations(token, monitoring_id, channel_ids)
+        except HexactAPIError as exc:
+            entry["error"] = str(exc)
+            results.append(entry)
+            continue
+        # Read back, for the same reason every other write here does: the
+        # envelope's `error: false` is the server's opinion, not evidence.
+        try:
+            after = graphql.get_watch_property_integrations(token, monitoring_id)
+            attached = [c.get("id") for c in (after or {}).get("integrations") or []]
+            entry["attached_after"] = attached
+            entry["applied"] = sorted(attached) == sorted(channel_ids)
+        except HexactAPIError as exc:
+            entry["applied"] = None
+            entry["verify_error"] = str(exc)
+        results.append(entry)
+
+    verb = "Muted" if args.mute else "Unmuted"
+    applied = sum(1 for r in results if r.get("applied"))
+    payload = {"action": "mute" if args.mute else "unmute",
+               "channels": channel_ids, "results": results, "applied": applied}
+
+    def render(data: dict[str, Any]) -> None:
+        print(f"{verb} {applied} of {len(results)} monitor(s), confirmed by read-back:\n")
+        for row in data["results"]:
+            if row.get("error"):
+                state = f"FAILED: {row['error']}"
+            elif row.get("applied") is None:
+                state = f"UNVERIFIED: {row.get('verify_error')}"
+            elif row["applied"]:
+                state = f"{len(row['attached_after'])} channel(s) attached"
+            else:
+                state = f"NOT APPLIED (still {row.get('attached_after')})"
+            print(f"  {row['id']}  {state}")
+        if args.mute and applied:
+            print("\n  These keep checking and keep recording changes. Whether an "
+                  "empty channel list also stops the account's default email is "
+                  "undocumented -- watch the inbox for a day to find out.")
+
+    _emit(payload, args.json, render)
+    return EXIT_OK if applied == len(results) else EXIT_FAILURE
 
 
 def cmd_watch_delete(args: argparse.Namespace) -> int:
@@ -684,29 +791,61 @@ def cmd_watch_delete(args: argparse.Namespace) -> int:
     graphql.delete_monitors(token, list(args.ids))
 
     # A mutation answering `{"error": false}` is a claim, not proof. Read each
-    # id back: the delete is confirmed by the monitor no longer resolving.
-    confirmed, still_present = [], []
+    # id back.
+    #
+    # Two things this loop got wrong when it was first run against the live
+    # server, both of which reported the opposite of the truth:
+    #
+    # 1. A deleted monitor does NOT stop resolving. `getWatchProperty` returns a
+    #    perfectly normal object with every field null, so "the call returned"
+    #    meant "still present" and a successful delete printed STILL PRESENT and
+    #    exited non-zero. Absence is `id is None`, not an exception.
+    # 2. An `AuthError` was counted as proof of deletion. A token expiring
+    #    mid-loop would therefore report every monitor successfully deleted --
+    #    the failure mode that most needs to be loud, silently reported as
+    #    success. Auth failure proves nothing; it goes in its own bucket.
+    confirmed, still_present, unverified = [], [], []
     for target in targets:
         try:
-            graphql.get_watch_property(token, target["id"])
+            monitor = graphql.get_watch_property(token, target["id"])
+        except graphql.AuthError as exc:
+            unverified.append({"id": target["id"], "reason": str(exc)})
+            continue
+        except HexactAPIError as exc:
+            # NOT proof of absence. This branch used to count any API error as
+            # a successful delete, and it fired for real: a malformed selection
+            # in the read-back query returned HTTP 400, and every delete
+            # reported "gone" on the strength of a syntax error. The only
+            # evidence of absence is a query that SUCCEEDS and returns a null
+            # id. Anything else is unverified.
+            unverified.append({"id": target["id"], "reason": str(exc)})
+            continue
+        if not monitor or monitor.get("id") in (None, "", 0):
+            confirmed.append(target["id"])
+        else:
             still_present.append(target["id"])
-        except graphql.AuthError:
-            confirmed.append(target["id"])
-        except HexactAPIError:
-            confirmed.append(target["id"])
 
     result = {"requested": list(args.ids), "deleted": confirmed,
-              "still_present": still_present, "targets": targets}
+              "still_present": still_present, "unverified": unverified,
+              "targets": targets}
 
     def render(data: dict[str, Any]) -> None:
         print(f"Deleted {len(data['deleted'])} of {len(data['requested'])} monitor(s), "
               f"confirmed by read-back.")
+        unverified_ids = {u["id"] for u in data["unverified"]}
         for target in data["targets"]:
-            state = "gone" if target["id"] in data["deleted"] else "STILL PRESENT"
+            if target["id"] in data["deleted"]:
+                state = "gone"
+            elif target["id"] in unverified_ids:
+                state = "UNVERIFIED (auth failed during read-back)"
+            else:
+                state = "STILL PRESENT"
             print(f"  {target['id']}  {state}  {target.get('url') or ''}")
 
     _emit(result, args.json, render)
-    return EXIT_OK if not still_present else EXIT_FAILURE
+    if still_present or unverified:
+        return EXIT_FAILURE
+    return EXIT_OK
 
 
 def cmd_watch_retune(args: argparse.Namespace) -> int:
@@ -727,6 +866,7 @@ def cmd_watch_retune(args: argparse.Namespace) -> int:
             before[monitoring_id] = {
                 "tool": monitor.get("tool"),
                 "change_notification_level": monitor.get("change_notification_level"),
+                "monitoring_interval": monitor.get("monitoring_interval"),
             }
         except HexactAPIError as exc:
             before[monitoring_id] = {"error": str(exc)}
@@ -741,14 +881,31 @@ def cmd_watch_retune(args: argparse.Namespace) -> int:
     # can be proven immediately is that the value persisted -- which is worth
     # proving, because a silently ignored setting looks identical to a working
     # one until the alerts keep arriving.
+    #
+    # Verify every field that was actually requested. An earlier version checked
+    # only `change_notification_level`, so `retune --interval 1_MONTH` compared
+    # the level to itself, found it unchanged-as-expected, and printed
+    # "confirmed by read-back: ANY -> ANY" without ever looking at the interval.
+    # A confirmation that does not read the field it changed is worse than none.
     changes = []
     for monitoring_id in args.ids:
         after = graphql.get_watch_property(token, monitoring_id)
-        was = before.get(monitoring_id, {}).get("change_notification_level")
-        now = after.get("change_notification_level")
-        changes.append({"id": monitoring_id, "tool": after.get("tool"),
-                        "level_before": was, "level_after": now,
-                        "applied": (args.level is None) or (now == args.level)})
+        prior = before.get(monitoring_id, {})
+        entry = {
+            "id": monitoring_id,
+            "tool": after.get("tool"),
+            "level_before": prior.get("change_notification_level"),
+            "level_after": after.get("change_notification_level"),
+            "interval_before": prior.get("monitoring_interval"),
+            "interval_after": after.get("monitoring_interval"),
+        }
+        checks = []
+        if args.level is not None:
+            checks.append(entry["level_after"] == args.level)
+        if args.interval is not None:
+            checks.append(entry["interval_after"] == args.interval)
+        entry["applied"] = all(checks) if checks else False
+        changes.append(entry)
 
     result = {"requested_level": args.level, "requested_interval": args.interval,
               "changes": changes,
@@ -759,8 +916,15 @@ def cmd_watch_retune(args: argparse.Namespace) -> int:
               f"read-back:\n")
         for change in data["changes"]:
             mark = "ok " if change["applied"] else "NOT APPLIED"
+            moved = []
+            if data["requested_level"] is not None:
+                moved.append(f"level {change['level_before']} -> {change['level_after']}")
+            if data["requested_interval"] is not None:
+                moved.append(
+                    f"interval {change['interval_before']} -> {change['interval_after']}"
+                )
             print(f"  [{mark}] {change['id']}  {change['tool']}  "
-                  f"{change['level_before']} -> {change['level_after']}")
+                  f"{'; '.join(moved)}")
         if data["requested_level"]:
             print("\n  The setting persisted. Whether it actually suppresses smaller "
                   "changes is undocumented and takes days of observation to confirm.")
@@ -840,6 +1004,25 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="one monitor's real configuration (GraphQL; needs `auth login`)")
     show.add_argument("monitoring_id", type=int)
     show.set_defaults(func=cmd_watch_show)
+
+    watch_sub.add_parser(
+        "channels",
+        help="list the account's notification channels (GraphQL; needs `auth login`)"
+    ).set_defaults(func=cmd_watch_channels)
+
+    mute = watch_sub.add_parser(
+        "mute",
+        help="stop an EXISTING monitor notifying, without pausing its checks")
+    mute.add_argument("ids", nargs="+", type=int)
+    mute.set_defaults(func=cmd_watch_mute, mute=True, channels=[])
+
+    unmute = watch_sub.add_parser(
+        "unmute", help="attach notification channels back to a monitor")
+    unmute.add_argument("ids", nargs="+", type=int)
+    unmute.add_argument("--channel", dest="channels", action="append", default=[],
+                        type=int, metavar="ID",
+                        help="repeatable; see `hexact watch channels`")
+    unmute.set_defaults(func=cmd_watch_mute, mute=False)
 
     delete = watch_sub.add_parser(
         "delete", help="permanently delete monitors (GraphQL; needs `auth login`)")

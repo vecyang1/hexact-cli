@@ -28,6 +28,8 @@ _MANAGED_VARS = (
     "HEXOWATCH_API_KEY", "HEXOMATIC_API_KEY",
     "HEXOWATCH_OP_REF", "HEXOMATIC_OP_REF",
     "HEXOWATCH_REFRESH_TOKEN", "HEXOWATCH_REFRESH_OP_REF",
+    "HEXOWATCH_ACCESS_TOKEN", "HEXOWATCH_ACCESS_OP_REF",
+    "HEXOMETER_API_KEY", "HEXOMETER_OP_REF",
     "HEXACT_OP_CMD", "HEXACT_HOME",
 )
 for _name in _MANAGED_VARS:
@@ -562,15 +564,36 @@ class TestMutationAllowlistIsEnforcedBeforeTheNetwork(unittest.TestCase):
             with self.assertRaises(HexactAPIError):
                 graphql.mutate("WatchOps.createWatchPropertyBulk", {}, token="t")
 
-    def test_the_four_operations_we_rely_on_are_listed(self):
+    def test_the_operations_we_rely_on_are_listed(self):
         # Pins the vendor's undocumented, unversioned names. A silent rename
         # should fail here rather than quietly return nothing at runtime.
+        #
+        # Deliberately an EXACT set, not a subset check: the allowlist is a
+        # containment boundary around a session token that reaches the whole
+        # account, so widening it must be a decision someone made on purpose
+        # and not a line that arrived with a feature.
         self.assertEqual(graphql.MUTATION_ALLOWLIST, frozenset({
             "WatchOps.deleteWatchProperty",
             "WatchOps.deleteWatchProperties",
             "WatchOps.updateWatchProperty",
             "WatchOps.updateWatchProperties",
+            "WatchIntegrationOps.updateWatchPropertyIntegrations",
+            "WatchIntegrationOps.deleteWatchPropertyIntegration",
+            "WatchIntegrationOps.deleteWatchIntegration",
         }))
+
+    def test_no_billing_admin_or_user_mutation_ever_enters_the_allowlist(self):
+        """The rule the exact-set test above protects, stated independently.
+
+        If someone regenerates that set from whatever the code currently does,
+        this still fails. Billing and account mutations live on the same
+        gateway and the same token reaches them.
+        """
+        for operation in graphql.MUTATION_ALLOWLIST:
+            namespace = operation.split(".", 1)[0]
+            self.assertNotIn(namespace, graphql.FORBIDDEN_NAMESPACES)
+            for banned in ("Billing", "Admin", "Package", "Payment", "Subscription"):
+                self.assertNotIn(banned, operation, f"{operation} looks account-level")
 
     def test_allowlisted_mutation_sends_values_as_variables(self):
         """Arguments must not be interpolated into the query document."""
@@ -749,3 +772,121 @@ class TestVersionIsNotWrittenTwice(unittest.TestCase):
             USER_AGENT.startswith(f"hexact-cli/{__version__} "),
             f"USER_AGENT {USER_AGENT!r} does not carry version {__version__!r}",
         )
+
+
+class TestLiveRunRegressions(unittest.TestCase):
+    """Four bugs that only a real account exposed, each of which reported the
+    OPPOSITE of the truth. Unit tests passed throughout; the account did not.
+    """
+
+    def _args(self, **kwargs):
+        return argparse.Namespace(json=True, **kwargs)
+
+    def test_login_stores_the_refresh_token_not_the_access_token(self):
+        """`UserLoginResponse` carries both, and only one can be exchanged.
+
+        Storing `token` produced a credential that authenticated for about an
+        hour, so every check passed, and then could never be renewed.
+        """
+        response = {"UserOps": {"authRefreshToken": {
+            "error": False, "message": "",
+            "token": "SHORT_LIVED_ACCESS", "refresh_token": "LONG_LIVED_REFRESH"}}}
+        with mock.patch.object(auth.graphql, "execute", return_value=response):
+            self.assertEqual(auth.login("a@b.c", "pw"), "LONG_LIVED_REFRESH")
+
+    def test_login_selects_refresh_token_in_the_query_document(self):
+        """A field absent from the selection comes back as None, not an error."""
+        self.assertIn("refresh_token", auth._REFRESH_MUTATION)
+
+    def test_deleted_monitor_returns_nulls_rather_than_erroring(self):
+        """The live gateway answers a deleted id with a full object of nulls.
+
+        Treating "the call returned" as "still present" made a successful
+        delete print STILL PRESENT and exit non-zero.
+        """
+        with mock.patch.object(cli.auth, "access_token", return_value="tok"), \
+             mock.patch.object(cli.graphql, "get_watch_property",
+                               return_value={"id": None, "name": None, "url": None}), \
+             mock.patch.object(cli.graphql, "delete_monitors", return_value={}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_watch_delete(self._args(ids=[402138], yes=True))
+        payload = json.loads(out.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["deleted"], [402138])
+        self.assertEqual(payload["still_present"], [])
+
+    def test_auth_failure_during_readback_is_never_reported_as_deleted(self):
+        """A token expiring mid-loop would otherwise confirm every deletion."""
+        with mock.patch.object(cli.auth, "access_token", return_value="tok"), \
+             mock.patch.object(cli.graphql, "get_watch_property",
+                               side_effect=graphql.AuthError("should be authenticated")), \
+             mock.patch.object(cli.graphql, "delete_monitors", return_value={}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_watch_delete(self._args(ids=[1], yes=True))
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["deleted"], [])
+        self.assertEqual([u["id"] for u in payload["unverified"]], [1])
+        self.assertNotEqual(code, 0, "an unverified delete must not exit 0")
+
+    def test_a_malformed_readback_query_is_not_proof_of_deletion(self):
+        """Measured: a bad selection returned HTTP 400 and every delete
+        reported 'gone' on the strength of a syntax error."""
+        with mock.patch.object(cli.auth, "access_token", return_value="tok"), \
+             mock.patch.object(cli.graphql, "get_watch_property",
+                               side_effect=HexactAPIError("HTTP 400 ... must have a selection")), \
+             mock.patch.object(cli.graphql, "delete_monitors", return_value={}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_watch_delete(self._args(ids=[7], yes=True))
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["deleted"], [], "an API error is not evidence of absence")
+        self.assertEqual([u["id"] for u in payload["unverified"]], [7])
+        self.assertNotEqual(code, 0)
+
+    def test_retune_interval_verifies_the_interval_not_the_level(self):
+        """`--interval` used to be 'confirmed' by comparing the level to itself."""
+        states = iter([
+            {"tool": "pingTool", "change_notification_level": "ANY",
+             "monitoring_interval": "3_MONTH"},
+            {"tool": "pingTool", "change_notification_level": "ANY",
+             "monitoring_interval": "3_MONTH"},   # the write silently did nothing
+        ])
+        with mock.patch.object(cli.auth, "access_token", return_value="tok"), \
+             mock.patch.object(cli.graphql, "get_watch_property",
+                               side_effect=lambda *a, **k: next(states)), \
+             mock.patch.object(cli.graphql, "update_monitors", return_value={}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_watch_retune(
+                    self._args(ids=[1], level=None, interval="1_MONTH"))
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["applied"], 0,
+                         "an unchanged interval must not count as applied")
+        self.assertNotEqual(code, 0)
+
+    def test_mute_sends_an_empty_list_rather_than_dropping_the_argument(self):
+        """`[]` is falsy. If `mutate` filtered on truthiness, mute would send
+        nothing, change nothing, and report success."""
+        seen = {}
+
+        def capture(query, variables=None, **kwargs):
+            seen["query"], seen["variables"] = query, variables
+            return {"WatchIntegrationOps": {
+                "updateWatchPropertyIntegrations": {"error": False}}}
+
+        with mock.patch.object(graphql, "execute", side_effect=capture):
+            graphql.set_monitor_integrations("tok", 402138, [])
+        self.assertEqual(seen["variables"]["watch_integration_ids"], [])
+        self.assertIn("watch_integration_ids", seen["query"])
+
+    def test_auth_status_recognises_a_directly_supplied_access_token(self):
+        """`status` checked only the refresh token, so it reported 'missing'
+        on a session where every other command worked."""
+        with mock.patch.dict(os.environ, {"HEXOWATCH_ACCESS_TOKEN": "direct-token"}), \
+             mock.patch.object(auth.graphql, "execute",
+                               return_value={"WatchOps": {"updateWatchProperty": {
+                                   "error": True, "message": "Permission denied"}}}):
+            verdict, _ = auth.status()
+        self.assertEqual(verdict, "authenticated")
