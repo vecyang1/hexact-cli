@@ -135,6 +135,42 @@ MUTATIONS = [
         '    auth.verify_renewable(refresh)',
         '    pass  # mutation: skip the exchange',
     ),
+    (
+        "a tag create trusts the gateway instead of reading it back",
+        "hexact/cli_hexowatch.py",
+        '    confirmed = next((t for t in after if t.get("id") == tag_id), None)',
+        '    confirmed = {"id": tag_id, "name": "?", "color": "?"}',
+    ),
+    (
+        "a tag delete reports success without checking the tag is gone",
+        "hexact/cli_hexowatch.py",
+        '    still_there = any(t.get("id") == args.tag_id for t in after)',
+        '    still_there = False',
+    ),
+    (
+        "replacing tags with an empty list stops being refused",
+        "hexact/cli_hexowatch.py",
+        '    if not args.tags and not args.clear:',
+        '    if False:',
+    ),
+    (
+        "deleting alerts stops requiring --yes",
+        "hexact/cli_hexowatch.py",
+        '    if args.alert_action == "delete" and not args.yes:',
+        '    if False:',
+    ),
+    (
+        "a gateway JSON string that will not parse becomes a crash",
+        "hexact/cli_hexomatic.py",
+        '    try:\n        return json.loads(value)\n    except (ValueError, TypeError):\n        return value',
+        '    return json.loads(value)',
+    ),
+    (
+        "monitor filters are interpolated into the query document",
+        "hexact/graphql.py",
+        '            "searchQuery": search, "sortBy": sort_by, "sortDir": sort_dir,',
+        '            "searchQuery": None, "sortBy": sort_by, "sortDir": sort_dir,',
+    ),
 ]
 
 

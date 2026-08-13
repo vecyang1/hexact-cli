@@ -14,11 +14,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import auth, graphql, hexomatic, hexometer, hexowatch
+from . import auth, cli_hexomatic, cli_hexowatch, graphql, hexomatic, hexometer, hexowatch
 from .config import HEXOMATIC, HEXOMETER, HEXOWATCH, CredentialError, resolve_key
 from .http import HexactAPIError, redact
-
-EXIT_OK, EXIT_FAILURE, EXIT_USAGE = 0, 1, 2
+from .output import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, emit
 
 _DURATION = re.compile(r"^(\d+)([hdwm])$")
 _DURATION_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
@@ -55,12 +54,10 @@ def _parse_timestamp(raw: Any) -> datetime | None:
     return None
 
 
-def _emit(payload: Any, as_json: bool, render) -> None:
-    if as_json:
-        json.dump(payload, sys.stdout, indent=2, default=str)
-        sys.stdout.write("\n")
-    else:
-        render(payload)
+# Kept as a module-level name because every command in this file calls it and
+# the tests patch it here; the implementation moved to hexact.output so the
+# per-product command modules can share it without importing this one.
+_emit = emit
 
 
 def _rows(payload: dict[str, Any], *names: str) -> list[dict[str, Any]]:
@@ -1157,6 +1154,69 @@ def build_parser() -> argparse.ArgumentParser:
     retune.add_argument("--interval", choices=hexowatch.INTERVALS)
     retune.set_defaults(func=cmd_watch_retune)
 
+    # --- Gateway-only Hexowatch surface (tags, filtered listing, alerts) ---
+    tags = watch_sub.add_parser(
+        "tags", help="monitor tags — REST has no tag concept at all")
+    tags_sub = tags.add_subparsers(dest="tag_action", required=True)
+    tags_sub.add_parser("list", help="every tag on the account").set_defaults(
+        func=cli_hexowatch.cmd_tags)
+    tag_create = tags_sub.add_parser("create", help="create a tag")
+    tag_create.add_argument("--name", required=True)
+    tag_create.add_argument("--color", required=True, metavar="HEX",
+                            help="e.g. '#4c8bf5'")
+    tag_create.set_defaults(func=cli_hexowatch.cmd_tag_create)
+    tag_delete = tags_sub.add_parser("delete", help="delete a tag account-wide")
+    tag_delete.add_argument("tag_id", type=int)
+    tag_delete.set_defaults(func=cli_hexowatch.cmd_tag_delete)
+    tag_set = tags_sub.add_parser(
+        "set", help="REPLACE one monitor's tags with exactly this list")
+    tag_set.add_argument("monitoring_id", type=int)
+    tag_set.add_argument("--tag", dest="tags", action="append", default=[],
+                         type=int, metavar="ID", help="repeatable")
+    tag_set.add_argument("--clear", action="store_true",
+                         help="required to remove every tag; an empty --tag "
+                              "list is refused so a replace cannot wipe tags "
+                              "by accident")
+    tag_set.set_defaults(func=cli_hexowatch.cmd_tag_set)
+
+    full = watch_sub.add_parser(
+        "list",
+        help="monitors with tool, interval and tags, filtered server-side "
+             "(GraphQL; needs `auth login`)")
+    full.add_argument("--tag", dest="tags", action="append", default=[],
+                      type=int, metavar="ID", help="repeatable")
+    full.add_argument("--tool", choices=hexowatch.TOOLS)
+    full.add_argument("--search", metavar="TEXT")
+    full.add_argument("--page", type=int, default=1)
+    full.add_argument("--limit", type=int, default=50)
+    state = full.add_mutually_exclusive_group()
+    state.add_argument("--active", dest="active", action="store_true", default=None)
+    state.add_argument("--paused", dest="active", action="store_false")
+    full.set_defaults(func=cli_hexowatch.cmd_monitors_full)
+
+    noise = watch_sub.add_parser(
+        "noise", help="notification volume, counted by the server")
+    noise.add_argument("--since", metavar="DATE")
+    noise.add_argument("--until", metavar="DATE")
+    noise.set_defaults(func=cli_hexowatch.cmd_noise)
+
+    alerts = watch_sub.add_parser(
+        "alerts", help="the dashboard's alert inbox — untouchable from REST")
+    alerts_sub = alerts.add_subparsers(dest="alert_action", required=True)
+    alerts_read = alerts_sub.add_parser("read", help="mark alerts as read")
+    read_scope = alerts_read.add_mutually_exclusive_group(required=True)
+    read_scope.add_argument("--all", action="store_true",
+                            help="every alert on the account")
+    read_scope.add_argument("--id", dest="ids", action="append", default=[],
+                            type=int, metavar="ID", help="repeatable")
+    alerts_read.set_defaults(func=cli_hexowatch.cmd_alerts, yes=False)
+    alerts_delete = alerts_sub.add_parser("delete", help="delete alerts")
+    alerts_delete.add_argument("--id", dest="ids", action="append", default=[],
+                               type=int, metavar="ID", required=True)
+    alerts_delete.add_argument("--yes", action="store_true",
+                               help="required: deleting alerts is irreversible")
+    alerts_delete.set_defaults(func=cli_hexowatch.cmd_alerts, all=False)
+
     auth_parser = subparsers.add_parser(
         "auth", help="session tokens for the GraphQL gateway (delete/update)")
     auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
@@ -1195,6 +1255,30 @@ def build_parser() -> argparse.ArgumentParser:
         sub = matic_sub.add_parser(state, help=f"{state} workflows")
         sub.add_argument("ids", nargs="+", type=int)
         sub.set_defaults(func=cmd_workflow_toggle, state=state)
+
+    # --- Gateway-only Hexomatic surface (credit burn, actual output) ---
+    credits = matic_sub.add_parser(
+        "credits",
+        help="automation credit consumption — absent from REST entirely "
+             "(GraphQL; needs `auth login`)")
+    credits.add_argument("--series", action="store_true",
+                         help="consumption over time instead of the totals")
+    credits.add_argument("--since", metavar="DATE")
+    credits.add_argument("--until", metavar="DATE")
+    credits.set_defaults(func=cli_hexomatic.cmd_credits)
+
+    detailed = matic_sub.add_parser(
+        "detail", help="workflows with credit cost, schedule and status")
+    detailed.set_defaults(func=cli_hexomatic.cmd_workflows_detailed)
+
+    results = matic_sub.add_parser(
+        "results",
+        help="what a workflow actually produced — REST returns only its logs")
+    results.add_argument("workflow_id", type=int)
+    results.add_argument("--url", action="store_true",
+                         help="return a link to the full JSON instead of an "
+                              "inline preview; the file is not downloaded")
+    results.set_defaults(func=cli_hexomatic.cmd_results)
 
     meter = subparsers.add_parser("meter", help="Hexometer: site health and SEO")
     meter_sub = meter.add_subparsers(dest="meter_command", required=True)

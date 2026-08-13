@@ -69,6 +69,21 @@ MUTATION_ALLOWLIST = frozenset({
     "UserWatchSettingsOps.update",
     "UserWatchSettingsOps.subscribeWebhook",
     "UserWatchSettingsOps.unsubscribeWebhook",
+    # Tags. The account runs 48 monitors with no grouping at all, and REST has
+    # no concept of a tag; `Watch.getUserWatchProperties(tags:)` can filter by
+    # one, so tagging is the only way to ask "how are the Bokksu monitors
+    # doing" without matching URLs by hand.
+    "WatchTagOps.createUserWatchTag",
+    "WatchTagOps.updateUserWatchTag",
+    "WatchTagOps.deleteUserWatchTag",
+    "WatchTagOps.updateWatchPropertyTags",
+    "WatchTagOps.addWatchPropertyTag",
+    "WatchTagOps.deleteWatchPropertyTag",
+    # The dashboard's alert list. Read state and deletion only -- these touch
+    # the notification inbox, never a monitor's configuration or its data.
+    "WatchAlertOps.setAllWatchAlertsReadState",
+    "WatchAlertOps.setWatchAlertReadState",
+    "WatchAlertOps.deleteWatchAlerts",
 })
 
 # Namespaces that must never be reachable, listed explicitly so the intent
@@ -479,5 +494,174 @@ def delete_integration(token: str, integration_id: int) -> dict[str, Any]:
     return mutate(
         "WatchIntegrationOps.deleteWatchIntegration",
         {"watch_integration_id": ("Int!", int(integration_id))},
+        token=token,
+    )
+
+
+# --- Tags ------------------------------------------------------------------
+# REST has no tag concept at all -- not undocumented, absent. `docs/GATEWAY.md`
+# `WatchTagOps` (6 fields) and `WatchTag` (2) are the whole feature, and
+# `Watch.getUserWatchProperties(tags: [Int])` is what makes them worth having:
+# it is the only server-side way to select a subset of monitors.
+
+USER_TAGS_QUERY = """
+query {
+  WatchTag {
+    getUserWatchTags {
+      tags { id name color }
+    }
+  }
+}
+"""
+
+PROPERTY_TAGS_QUERY = """
+query($watch_property_id: Int!) {
+  WatchTag {
+    getWatchPropertyTags(watch_property_id: $watch_property_id) {
+      tags { id name color }
+    }
+  }
+}
+"""
+
+
+def get_user_tags(token: str) -> Any:
+    """Every tag on the account, with the ids the filter takes."""
+    data = execute(USER_TAGS_QUERY, token=token)
+    return unwrap(data, "WatchTag", "getUserWatchTags")
+
+
+def get_property_tags(token: str, monitoring_id: int) -> Any:
+    """The tags attached to one monitor."""
+    data = execute(
+        PROPERTY_TAGS_QUERY, {"watch_property_id": int(monitoring_id)}, token=token
+    )
+    return unwrap(data, "WatchTag", "getWatchPropertyTags")
+
+
+def create_tag(token: str, name: str, color: str) -> dict[str, Any]:
+    """Create a tag. Returns the new `watch_tag_id`."""
+    return mutate(
+        "WatchTagOps.createUserWatchTag",
+        {"name": ("String!", name), "color": ("String!", color)},
+        token=token,
+        selection="error message watch_tag_id",
+    )
+
+
+def delete_tag(token: str, tag_id: int) -> dict[str, Any]:
+    """Delete a tag account-wide. Monitors keep existing; they lose the label."""
+    return mutate(
+        "WatchTagOps.deleteUserWatchTag",
+        {"watch_tag_id": ("Int!", int(tag_id))},
+        token=token,
+    )
+
+
+def set_property_tags(token: str, monitoring_id: int, tag_ids: list[int]) -> dict[str, Any]:
+    """Replace a monitor's tags with exactly this list.
+
+    A *replace*, not an add -- the same shape as `updateWatchPropertyIntegrations`,
+    and the same trap: passing `[]` clears every tag rather than doing nothing.
+    Callers that mean "add one" should read the current list and send the union.
+    """
+    return mutate(
+        "WatchTagOps.updateWatchPropertyTags",
+        {
+            "watch_property_id": ("Int!", int(monitoring_id)),
+            "tags": ("[Int]!", [int(t) for t in tag_ids]),
+        },
+        token=token,
+    )
+
+
+# --- Filtered, paged monitor listing ---------------------------------------
+# REST `v1/monitored_urls` returns id/address/name/paused for every monitor at
+# once, with no total, no filter and no sort. This returns the same monitors
+# with their tool, interval, tags and active state, filtered server-side.
+
+USER_PROPERTIES_QUERY = """
+query($page: Int!, $limit: Int!, $active: Boolean, $searchQuery: String,
+      $sortBy: String, $sortDir: String, $tags: [Int], $tool: String) {
+  Watch {
+    getUserWatchProperties(page: $page, limit: $limit, active: $active,
+                           searchQuery: $searchQuery, sortBy: $sortBy,
+                           sortDir: $sortDir, tags: $tags, tool: $tool) {
+      totalCount
+      watchProperties {
+        id name url tool active monitoring_interval createdAt user_agent
+        tags { id name color }
+      }
+    }
+  }
+}
+"""
+
+
+def list_monitors(
+    token: str, *, page: int = 1, limit: int = 50, active: bool | None = None,
+    search: str | None = None, tags: list[int] | None = None,
+    tool: str | None = None, sort_by: str | None = None,
+    sort_dir: str | None = None,
+) -> dict[str, Any]:
+    """Monitors with their real configuration, filtered and paged server-side."""
+    data = execute(
+        USER_PROPERTIES_QUERY,
+        {
+            "page": int(page), "limit": int(limit), "active": active,
+            "searchQuery": search, "sortBy": sort_by, "sortDir": sort_dir,
+            "tags": [int(t) for t in tags] if tags else None, "tool": tool,
+        },
+        token=token,
+    )
+    return unwrap(data, "Watch", "getUserWatchProperties")
+
+
+# --- Notification volume ---------------------------------------------------
+# The account's measured problem is alert volume, and until now it was counted
+# client-side by pulling every change and grouping in Python. The gateway keeps
+# the same figures and will return them per period.
+
+NOTIFICATIONS_PIE_QUERY = """
+query($from: String, $to: String) {
+  WatchNotification {
+    watchNotificationsPieChart(from: $from, to: $to) { field count }
+  }
+}
+"""
+
+
+def notification_breakdown(
+    token: str, *, since: str | None = None, until: str | None = None
+) -> Any:
+    """Notification counts grouped by the gateway's own categories."""
+    data = execute(NOTIFICATIONS_PIE_QUERY, {"from": since, "to": until}, token=token)
+    return unwrap(data, "WatchNotification", "watchNotificationsPieChart")
+
+
+# --- Alert inbox -----------------------------------------------------------
+# Distinct from monitors and from changes: this is the dashboard's own unread
+# list. Nothing in REST touches it, so an account with months of alerts has no
+# programmatic way to clear them.
+
+def mark_all_alerts_read(token: str) -> dict[str, Any]:
+    """Mark every alert on the account as read. No arguments, no undo."""
+    return mutate("WatchAlertOps.setAllWatchAlertsReadState", {}, token=token)
+
+
+def mark_alerts_read(token: str, alert_ids: list[int]) -> dict[str, Any]:
+    """Mark specific alerts as read."""
+    return mutate(
+        "WatchAlertOps.setWatchAlertReadState",
+        {"watch_alert_ids": ("[Int]", [int(i) for i in alert_ids])},
+        token=token,
+    )
+
+
+def delete_alerts(token: str, alert_ids: list[int]) -> dict[str, Any]:
+    """Delete alerts from the inbox. The monitors and their history are untouched."""
+    return mutate(
+        "WatchAlertOps.deleteWatchAlerts",
+        {"watchAlertIds": ("[Int]", [int(i) for i in alert_ids])},
         token=token,
     )

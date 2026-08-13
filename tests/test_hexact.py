@@ -36,7 +36,9 @@ _MANAGED_VARS = (
 for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
 
-from hexact import auth, cli, config, graphql, hexomatic, hexowatch  # noqa: E402
+from hexact import (  # noqa: E402
+    auth, cli, cli_hexomatic, cli_hexowatch, config, graphql, hexomatic, hexowatch,
+)
 from hexact.cli import (  # noqa: E402
     _is_paused, _normalise_address, _parse_timestamp, _rows, _state_label,
     main, parse_since, resolve_tool_from_payload,
@@ -584,7 +586,35 @@ class TestMutationAllowlistIsEnforcedBeforeTheNetwork(unittest.TestCase):
             "UserWatchSettingsOps.update",
             "UserWatchSettingsOps.subscribeWebhook",
             "UserWatchSettingsOps.unsubscribeWebhook",
+            # Widened deliberately for tags and the alert inbox. Both stay
+            # inside Hexowatch: tags label monitors, alert operations touch the
+            # notification inbox. Neither can reach a monitor's data, an
+            # account setting, or a billing surface.
+            "WatchTagOps.createUserWatchTag",
+            "WatchTagOps.updateUserWatchTag",
+            "WatchTagOps.deleteUserWatchTag",
+            "WatchTagOps.updateWatchPropertyTags",
+            "WatchTagOps.addWatchPropertyTag",
+            "WatchTagOps.deleteWatchPropertyTag",
+            "WatchAlertOps.setAllWatchAlertsReadState",
+            "WatchAlertOps.setWatchAlertReadState",
+            "WatchAlertOps.deleteWatchAlerts",
         }))
+
+    def test_every_allowlisted_operation_stays_inside_hexowatch(self):
+        """A second, independent statement of the boundary.
+
+        The exact-set test above pins *which* operations are allowed; this pins
+        *what kind*. Regenerating the set from the code would satisfy the first
+        and still fail this one if a Hexomatic, Hexospark or Hexometer mutation
+        were added -- those products' writes have not been reviewed and the same
+        session token reaches all of them.
+        """
+        allowed_namespaces = {"WatchOps", "WatchIntegrationOps", "WatchTagOps",
+                              "WatchAlertOps", "UserWatchSettingsOps"}
+        for operation in graphql.MUTATION_ALLOWLIST:
+            self.assertIn(operation.split(".", 1)[0], allowed_namespaces,
+                          f"{operation} is outside the reviewed Hexowatch surface")
 
     def test_no_billing_admin_or_user_mutation_ever_enters_the_allowlist(self):
         """The rule the exact-set test above protects, stated independently.
@@ -1237,3 +1267,148 @@ class TestLoginRefusesAnUnrenewableCredential(unittest.TestCase):
                 cli.cmd_auth_login(args)
         store_file.assert_not_called()
         store_op.assert_not_called()
+
+
+class TestTagWritesAreConfirmedNotClaimed(unittest.TestCase):
+    """`{"error": false}` is the gateway's word, not evidence.
+
+    Every other write in this client reads its result back. These assert the
+    tag commands do the same, and -- more importantly -- that a create the
+    gateway *claims* succeeded but which is absent afterwards is reported as a
+    failure with a non-zero exit, rather than as success.
+    """
+
+    def _args(self, **overrides):
+        base = dict(json=False, name="staging", color="#4c8bf5")
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_create_reports_failure_when_the_tag_is_not_there_afterwards(self):
+        with mock.patch.object(auth, "access_token", return_value="t"), \
+                mock.patch.object(graphql, "create_tag",
+                                  return_value={"error": False, "watch_tag_id": 7}), \
+                mock.patch.object(graphql, "get_user_tags",
+                                  return_value={"tags": []}), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli_hexowatch.cmd_tag_create(self._args())
+        self.assertEqual(code, 2)
+        self.assertIn("not created", out.getvalue())
+
+    def test_create_confirms_when_the_read_back_finds_it(self):
+        with mock.patch.object(auth, "access_token", return_value="t"), \
+                mock.patch.object(graphql, "create_tag",
+                                  return_value={"error": False, "watch_tag_id": 7}), \
+                mock.patch.object(graphql, "get_user_tags", return_value={
+                    "tags": [{"id": 7, "name": "staging", "color": "#4c8bf5"}]}), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli_hexowatch.cmd_tag_create(self._args())
+        self.assertEqual(code, 0)
+        self.assertIn("confirmed", out.getvalue())
+
+    def test_delete_reports_failure_when_the_tag_survives(self):
+        with mock.patch.object(auth, "access_token", return_value="t"), \
+                mock.patch.object(graphql, "delete_tag", return_value={"error": False}), \
+                mock.patch.object(graphql, "get_user_tags", return_value={
+                    "tags": [{"id": 7, "name": "staging", "color": "#fff"}]}), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli_hexowatch.cmd_tag_delete(argparse.Namespace(json=False, tag_id=7))
+        self.assertEqual(code, 2)
+        self.assertIn("still present", out.getvalue())
+
+
+class TestDestructiveDefaultsAreRefused(unittest.TestCase):
+    """Two mutations whose *empty* form is the destructive one.
+
+    `updateWatchPropertyTags` replaces rather than appends, so `--tag` omitted
+    would clear every tag on the monitor. Deleting alerts has no undo. Both must
+    refuse rather than proceed, and must not reach the network to do so.
+    """
+
+    def test_tag_set_refuses_an_empty_list_without_clear(self):
+        sent = []
+        with mock.patch.object(auth, "access_token", side_effect=lambda: sent.append("token")), \
+                mock.patch.object(graphql, "set_property_tags",
+                                  side_effect=AssertionError("must not be called")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = cli_hexowatch.cmd_tag_set(argparse.Namespace(
+                json=False, monitoring_id=1, tags=[], clear=False))
+        self.assertEqual(code, 2)
+        self.assertIn("REPLACES", err.getvalue())
+        self.assertEqual(sent, [], "refused before any credential was resolved")
+
+    def test_alert_delete_refuses_without_yes(self):
+        """Asserts the refusal happens *before* the credential is resolved.
+
+        The first version of this test mocked `access_token` to return a token
+        and only checked the exit code, so it passed while the command was in
+        fact resolving a credential and hitting the network first -- which a
+        live smoke run exposed as an auth error where a usage error belonged.
+        Patching it with a `side_effect` that fails is what makes the ordering
+        observable rather than assumed.
+        """
+        with mock.patch.object(auth, "access_token",
+                               side_effect=AssertionError("resolved a credential "
+                                                          "before refusing")), \
+                mock.patch.object(graphql, "delete_alerts",
+                                  side_effect=AssertionError("must not be called")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = cli_hexowatch.cmd_alerts(argparse.Namespace(
+                json=False, alert_action="delete", ids=[1, 2], yes=False, all=False))
+        self.assertEqual(code, 2)
+        self.assertIn("irreversible", err.getvalue())
+
+
+class TestGatewayJsonStringsAreNeverAssumedToParse(unittest.TestCase):
+    """`data` and `time_series` arrive as JSON *strings*, and sometimes do not.
+
+    An error path can put a bare message in the same field. Turning that into a
+    `JSONDecodeError` would replace a readable failure with a stack trace, so
+    the raw value must survive.
+    """
+
+    def test_valid_json_is_parsed(self):
+        self.assertEqual(cli_hexomatic._maybe_json('{"used": 12}'), {"used": 12})
+
+    def test_a_bare_message_is_kept_verbatim(self):
+        self.assertEqual(cli_hexomatic._maybe_json("no data for this period"),
+                         "no data for this period")
+
+    def test_a_non_string_passes_through(self):
+        self.assertEqual(cli_hexomatic._maybe_json({"already": "parsed"}),
+                         {"already": "parsed"})
+
+
+class TestMonitorFiltersTravelAsVariables(unittest.TestCase):
+    """Filter values must never be interpolated into the query document.
+
+    Same rule the mutation path already enforces. A search term is user input
+    and reaches a query language; the only safe place for it is a variable.
+    """
+
+    def test_search_and_tags_are_sent_as_variables(self):
+        captured = {}
+
+        def fake_execute(document, variables=None, **kwargs):
+            captured["document"] = document
+            captured["variables"] = variables
+            return {"Watch": {"getUserWatchProperties":
+                              {"totalCount": 0, "watchProperties": []}}}
+
+        with mock.patch.object(graphql, "execute", side_effect=fake_execute):
+            graphql.list_monitors("t", search='" } evil {', tags=[3, 4], tool="keywordTool")
+
+        self.assertNotIn("evil", captured["document"])
+        self.assertEqual(captured["variables"]["searchQuery"], '" } evil {')
+        self.assertEqual(captured["variables"]["tags"], [3, 4])
+
+
+class TestNoiseBreakdownSurvivesAnEmptyPeriod(unittest.TestCase):
+    def test_zero_total_does_not_divide_by_zero(self):
+        with mock.patch.object(auth, "access_token", return_value="t"), \
+                mock.patch.object(graphql, "notification_breakdown",
+                                  return_value=[{"field": "visual", "count": 0}]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli_hexowatch.cmd_noise(
+                argparse.Namespace(json=False, since=None, until=None))
+        self.assertEqual(code, 0)
+        self.assertIn("visual", out.getvalue())
