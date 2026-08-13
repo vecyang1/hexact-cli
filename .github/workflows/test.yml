@@ -1,0 +1,62 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor the README advertises; 3.14 is where the
+        # InvalidURL credential-leak regression was originally found.
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run tests
+        # No dependencies to install and no credentials to provide: the suite
+        # scrubs every variable the package reads at import, so it cannot pass
+        # because a real key happened to be in the environment.
+        run: python -m unittest discover -s tests -v
+
+      - name: Assert the suite is not empty
+        # An exit code of 0 over zero tests is indistinguishable from success.
+        # Read the count, not the status.
+        run: |
+          count=$(python -m unittest discover -s tests -v 2>&1 | grep -cE '^test_\S+ \(' || true)
+          echo "collected $count tests"
+          if [ "$count" -lt 30 ]; then
+            echo "::error::Expected at least 30 tests, collected $count — the suite shrank or did not run."
+            exit 1
+          fi
+
+      - name: Verify no credential is committed
+        # Matches only real-length keys (live ones are 60-64 chars). A looser
+        # `KEY=.+` pattern flags the README's `export HEXOWATCH_API_KEY=…`
+        # example and the short test fixtures ("from-file", "leaked"), which
+        # would make this gate red on a clean tree -- a gate that refuses
+        # everyone is broken, not strict.
+        run: |
+          pattern='(HEXOWATCH|HEXOMATIC|HEXOMETER)_API_KEY=['"'"'"]?[A-Za-z0-9_-]{40,}'
+          if git grep -nIE "$pattern" -- ':!.github'; then
+            echo "::error::A real-length API key appears to be committed."
+            exit 1
+          fi
+          # Control: prove the pattern can match, so a clean result means
+          # "absent" rather than "the check is broken".
+          if ! printf 'HEXOWATCH_API_KEY=%s\n' "$(printf 'x%.0s' $(seq 64))" \
+               | grep -qE "$pattern"; then
+            echo "::error::Secret-scan pattern failed its own control probe."
+            exit 1
+          fi
+          echo "no committed credentials (pattern verified against a control)"
