@@ -10,6 +10,7 @@ under test. Individual tests opt back in with ``mock.patch.dict``.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import http.client
 import io
@@ -1137,3 +1138,102 @@ class TestEmptyNamespaceFallsBackToTheFieldDictionary(unittest.TestCase):
         self.assertIn("getThing", found)
         self.assertFalse(any("somethingUnrelatedZz" in p for p in gw.probes),
                          "dictionary fallback ran despite normal seeds working")
+
+
+def _jwt(lifetime_seconds: int, *, issued_offset: int = 0) -> str:
+    """A structurally valid JWT with real timing claims and a junk signature.
+
+    Nothing here verifies signatures -- only the `iat`/`exp` claims are read --
+    so a fake is sufficient and no real credential is needed in a test file.
+    """
+    issued = int(datetime.now(timezone.utc).timestamp()) + issued_offset
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=")
+    body = json.dumps({"iat": issued, "exp": issued + lifetime_seconds,
+                       "id": 1, "userType": "user", "version": 1}).encode()
+    return b".".join([header, base64.urlsafe_b64encode(body).rstrip(b"="),
+                      b"not-a-real-signature"]).decode()
+
+
+class TestCredentialClassification(unittest.TestCase):
+    """A stored credential must be identifiable as the wrong *kind*, offline.
+
+    Regression for a real outage: the 1Password item in the refresh-token slot
+    held a one-hour token, so every command failed a day later with "not
+    accepted" -- a message that points at the network or the account, not at the
+    credential. Both directions are asserted, because a classifier that answers
+    "access" for everything would pass a one-sided test while breaking login.
+    """
+
+    def test_a_one_hour_token_is_an_access_token(self):
+        facts = auth.classify_credential(_jwt(3600))
+        self.assertEqual(facts["kind"], "access")
+        self.assertEqual(facts["lifetime_seconds"], 3600)
+
+    def test_a_long_lived_token_is_a_refresh_token(self):
+        facts = auth.classify_credential(_jwt(30 * 24 * 3600))
+        self.assertEqual(facts["kind"], "refresh")
+
+    def test_a_non_jwt_is_opaque_rather_than_guessed(self):
+        facts = auth.classify_credential("plain-opaque-token-value")
+        self.assertEqual(facts["kind"], "opaque")
+        self.assertIsNone(facts["expired"])
+
+    def test_expiry_in_the_past_is_reported_as_expired(self):
+        facts = auth.classify_credential(_jwt(3600, issued_offset=-86400))
+        self.assertTrue(facts["expired"])
+
+    def test_description_never_contains_the_token(self):
+        token = _jwt(3600)
+        self.assertNotIn(token, auth.describe_credential(token))
+        self.assertNotIn(token.split(".")[1], auth.describe_credential(token))
+
+
+class TestLoginRefusesAnUnrenewableCredential(unittest.TestCase):
+    """Selecting `refresh_token` was never the guarantee; checking it is.
+
+    The shipped build already read the right field and a one-hour token still
+    ended up stored, because nothing inspected what actually arrived and nothing
+    exercised it before writing it to 1Password.
+    """
+
+    def test_login_rejects_an_access_shaped_refresh_token(self):
+        payload = {"UserOps": {"authRefreshToken": {
+            "error": False, "token": "x", "refresh_token": _jwt(3600)}}}
+        with mock.patch.object(graphql, "execute", return_value=payload):
+            with self.assertRaises(auth.LoginError) as caught:
+                auth.login("a@b.com", "pw")
+        self.assertIn("ACCESS token", str(caught.exception))
+
+    def test_login_accepts_a_genuine_refresh_token(self):
+        good = _jwt(30 * 24 * 3600)
+        payload = {"UserOps": {"authRefreshToken": {
+            "error": False, "token": "x", "refresh_token": good}}}
+        with mock.patch.object(graphql, "execute", return_value=payload):
+            self.assertEqual(auth.login("a@b.com", "pw"), good)
+
+    def test_nothing_is_stored_when_the_exchange_fails(self):
+        """The whole point: a credential that cannot be exchanged never lands.
+
+        Asserts on the *absence* of a write. A test that only checked the raised
+        exception would pass even if the token had already been persisted before
+        the check ran, which is precisely the ordering bug being fixed.
+        """
+        refresh = _jwt(30 * 24 * 3600)
+
+        def fake_execute(document, variables=None, **kwargs):
+            if "authRefreshToken" in document:
+                return {"UserOps": {"authRefreshToken": {
+                    "error": False, "token": "x", "refresh_token": refresh}}}
+            # The gateway's house style for "no": success envelope, null token.
+            return {"UserOps": {"authAccessToken": {"error": False, "token": None}}}
+
+        args = argparse.Namespace(email="a@b.com", store="file", json=False,
+                                  op_item="T", op_vault="V")
+        with mock.patch.object(auth, "prompt_password", return_value="pw"), \
+                mock.patch.object(graphql, "execute", side_effect=fake_execute), \
+                mock.patch.object(auth, "store_refresh_token") as store_file, \
+                mock.patch.object(auth, "store_refresh_token_1password") as store_op:
+            with self.assertRaises(auth.LoginError):
+                cli.cmd_auth_login(args)
+        store_file.assert_not_called()
+        store_op.assert_not_called()

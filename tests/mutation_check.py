@@ -78,8 +78,8 @@ MUTATIONS = [
         # authenticates for an hour and then dies unrenewable.
         "login stores the access token instead of the refresh token",
         "hexact/auth.py",
-        'return _token_from_response(data, "authRefreshToken", field_name="refresh_token")',
-        'return _token_from_response(data, "authRefreshToken", field_name="token")',
+        'token = _token_from_response(data, "authRefreshToken", field_name="refresh_token")',
+        'token = _token_from_response(data, "authRefreshToken", field_name="token")',
     ),
     (
         "a deleted monitor reading back as all-nulls counts as still present",
@@ -122,6 +122,18 @@ MUTATIONS = [
         "hexact/auth.py",
         '    finally:\n        # The window where the token exists on disk is this function\'s body, and\n        # the file is owner-only for all of it.\n        try:\n            os.unlink(path)\n        except OSError:\n            pass',
         '    finally:\n        pass',
+    ),
+    (
+        "login stops classifying what it hands back",
+        "hexact/auth.py",
+        '    if classify_credential(token)["kind"] == "access":',
+        '    if False:',
+    ),
+    (
+        "login stores a credential without exchanging it first",
+        "hexact/cli.py",
+        '    auth.verify_renewable(refresh)',
+        '    pass  # mutation: skip the exchange',
     ),
 ]
 

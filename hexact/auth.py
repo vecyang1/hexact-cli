@@ -21,6 +21,8 @@ narrow enough to read in one screen, which is the point.
 
 from __future__ import annotations
 
+import base64
+import datetime
 import getpass
 import json
 import os
@@ -28,6 +30,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +89,72 @@ class LoginError(RuntimeError):
     """Login was refused, or returned no token."""
 
 
+# An access token from this gateway is minted with a one-hour life; the refresh
+# token's is far longer. That gap is the only thing that tells the two apart
+# offline, and it is enough: anything this short-lived in the refresh slot is
+# the wrong credential, whatever produced it.
+_ACCESS_TOKEN_MAX_LIFETIME_SECONDS = 2 * 60 * 60
+
+
+def classify_credential(token: str) -> dict[str, Any]:
+    """Say what a token *is*, offline, without ever revealing it.
+
+    Returns ``kind`` (``access`` / ``refresh`` / ``opaque``), and for a JWT the
+    issued/expiry epochs and whether it has already lapsed. Only the timing
+    claims are read; the rest of the payload is never touched, since it carries
+    account identifiers that have no business in a log or an agent transcript.
+
+    Why this exists. `login` has selected `refresh_token` since the bug that
+    named it was fixed, and the stored credential was *still* an access token a
+    day later -- written by an older build, never replaced, and unrenewable.
+    Nothing in the system could tell, because both values authenticate and both
+    are opaque strings. Choosing the right field was never the guarantee;
+    checking what actually landed is. Cheap, offline, and decidable, so it runs
+    on the way in and on the way out.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {"kind": "opaque", "issued_at": None, "expires_at": None,
+                "expired": None, "lifetime_seconds": None}
+    try:
+        segment = parts[1]
+        payload = json.loads(
+            base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+        )
+    except Exception:  # noqa: BLE001 - a malformed JWT is just "opaque" here
+        return {"kind": "opaque", "issued_at": None, "expires_at": None,
+                "expired": None, "lifetime_seconds": None}
+
+    issued, expires = payload.get("iat"), payload.get("exp")
+    lifetime = (expires - issued) if isinstance(issued, int) and isinstance(expires, int) else None
+    kind = "refresh"
+    if lifetime is not None and lifetime <= _ACCESS_TOKEN_MAX_LIFETIME_SECONDS:
+        kind = "access"
+    return {
+        "kind": kind,
+        "issued_at": issued,
+        "expires_at": expires,
+        "expired": bool(isinstance(expires, int) and expires < time.time()),
+        "lifetime_seconds": lifetime,
+    }
+
+
+def describe_credential(token: str) -> str:
+    """One human-readable line about a token. Never contains the token."""
+    facts = classify_credential(token)
+    if facts["kind"] == "opaque":
+        return "an opaque token (not a JWT), so its lifetime cannot be read offline"
+    stamp = (
+        datetime.datetime.fromtimestamp(facts["expires_at"], datetime.timezone.utc)
+        .isoformat() if facts["expires_at"] else "unknown"
+    )
+    hours = (facts["lifetime_seconds"] / 3600) if facts["lifetime_seconds"] else None
+    life = f"{hours:.1f}h life" if hours is not None else "unknown life"
+    state = "EXPIRED" if facts["expired"] else "still valid"
+    article = "an" if facts["kind"][0] in "aeiou" else "a"
+    return f"{article} {facts['kind']} token ({life}, expires {stamp}, {state})"
+
+
 def _token_from_response(
     data: dict[str, Any], field: str, *, field_name: str = "token"
 ) -> str:
@@ -109,9 +178,11 @@ def _token_from_response(
             "  Most likely cause: the stored value is an access token, not a "
             "refresh token. They are different fields on UserLoginResponse and "
             "only the refresh token can be exchanged.\n"
-            "  Fix: re-run `hexact auth login` (this build stores the right "
-            "one), or set HEXOWATCH_ACCESS_TOKEN to use an access token "
-            "directly for the next hour."
+            "  Fix: re-run `hexact auth login`. This build classifies the "
+            "credential before it hands it back and exchanges it once before "
+            "storing, so it cannot persist this shape again. Or set "
+            "HEXOWATCH_ACCESS_TOKEN to use an access token directly for the "
+            "next hour."
         )
     return str(token)
 
@@ -127,7 +198,40 @@ def login(email: str, password: str) -> str:
     and it stops working an hour later with no way to renew it.
     """
     data = graphql.execute(_REFRESH_MUTATION, {"email": email, "password": password})
-    return _token_from_response(data, "authRefreshToken", field_name="refresh_token")
+    token = _token_from_response(data, "authRefreshToken", field_name="refresh_token")
+
+    # Selecting the right field is not proof that the right value arrived. Check
+    # what is actually in hand before any caller can persist it -- the failure
+    # this catches is silent for an hour and then permanent.
+    if classify_credential(token)["kind"] == "access":
+        raise LoginError(
+            "authRefreshToken returned what looks like an ACCESS token: "
+            f"{describe_credential(token)}. Refusing to hand it back as a "
+            "refresh token -- it would authenticate today and be unrenewable "
+            "tomorrow. The gateway's response shape may have changed; re-derive "
+            "UserLoginResponse before trusting this path again."
+        )
+    return token
+
+
+def verify_renewable(refresh_token: str) -> None:
+    """Prove a refresh token can actually mint an access token. Raises if not.
+
+    The project's rule for mutations is that an ``{"error": false}`` answer is a
+    claim rather than proof, and every write is read back. The credential path
+    was the one place that rule was never applied: a token was stored on the
+    strength of the response that produced it, and nothing exercised it until
+    the next command -- or, as happened here, the next day.
+
+    One extra request at login turns "unrenewable credential" from a silent
+    failure discovered later into a loud one discovered now.
+    """
+    minted = access_token(refresh_token=refresh_token)
+    if not minted:
+        raise LoginError(
+            "the refresh token was accepted but minted no access token; "
+            "refusing to store a credential that cannot be exchanged."
+        )
 
 
 def access_token(refresh_token: str | None = None) -> str:
@@ -278,7 +382,18 @@ def status() -> tuple[str, str]:
     except CredentialError as exc:
         return "missing", str(exc)
     except LoginError as exc:
-        return "rejected", f"stored token was not accepted: {exc}"
+        # Name what is actually stored. "Not accepted" sends the reader to the
+        # network or the account; the real cause here was an access token sitting
+        # in the refresh slot, which only the token's own claims reveal. Best
+        # effort: an unreadable credential must not turn a diagnosis into a crash.
+        try:
+            stored = describe_credential(resolve_key(HEXOWATCH_SESSION))
+        except Exception:  # noqa: BLE001
+            stored = None
+        detail = f"stored token was not accepted: {exc}"
+        if stored:
+            detail += f"\n  What is stored: {stored}."
+        return "rejected", detail
     except graphql.AuthError as exc:
         return "rejected", str(exc)
     except graphql.HexactAPIError as exc:

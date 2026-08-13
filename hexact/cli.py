@@ -581,6 +581,12 @@ def cmd_auth_login(args: argparse.Namespace) -> int:
 
     refresh = auth.login(args.email, password)
 
+    # Exercise the credential before persisting it. Storing first and finding
+    # out later is exactly how an unrenewable token sat in 1Password for a day
+    # looking healthy: it authenticated when written and could never be
+    # exchanged again. One request closes that window.
+    auth.verify_renewable(refresh)
+
     if args.store == "1password":
         reference = auth.store_refresh_token_1password(
             refresh, item_title=args.op_item, vault=args.op_vault)
