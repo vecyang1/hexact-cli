@@ -5,8 +5,8 @@
 Source: `https://api.hexowatch.com/v2/ql`. The vendor publishes no schema for this endpoint and Apollo introspection is disabled, so every name below was recovered from validator error messages.
 
 - **94 namespaces** (53 query, 41 mutation)
-- **342 fields**, **464 arguments**, 342 with a recovered return type
-- 40499 requests, **0 resolvers entered** (must be 0)
+- **359 fields**, **489 arguments**, 359 with a recovered return type
+- 42081 requests, **0 resolvers entered** (must be 0)
 
 ## How this was recovered, and why it is inert
 
@@ -22,9 +22,9 @@ The run self-checks this: any probe whose response carried a non-null `data` is 
 
 ## Coverage limit — read this before concluding anything is absent
 
-9 namespaces returned **no** field names. That means *not discovered*, *not* empty. The oracle only suggests names lexically close to the probe, so a namespace whose fields share no prefix with any seed stays invisible. Treat these as UNKNOWN:
+3 namespaces returned **no** field names. That means *not discovered*, *not* empty. The oracle only suggests names lexically close to the probe, so a namespace whose fields share no prefix with any seed stays invisible. Treat these as UNKNOWN:
 
-> `mutation:AdminOps`, `mutation:AlertOps`, `mutation:BillingOps`, `mutation:HexomaticAutomationOps`, `mutation:ShortlinkOps`, `query:Billing`, `query:HexometerIssues`, `query:HexosparkUnifiedInbox`, `query:Scraper`
+> `mutation:HexomaticAutomationOps`, `mutation:ShortlinkOps`, `query:Scraper`
 
 ## Never call these
 
@@ -529,7 +529,11 @@ The session token this gateway wants reaches the **whole account**, including bi
 | --- | --- | --- | --- |
 | `getUserTags` | `GetUserTagsResult` | — | `settings: GetUserTagsInput` |
 
-### `query HexosparkUnifiedInbox` — fields UNKNOWN (not discovered)
+### `query HexosparkUnifiedInbox` — 1 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getCampaignsList` | `GetCampaignsListResult` | — | `ids: GetUnifiedIntegrationsInput` |
 
 ### `query HexosparkUser` — 1 field(s)
 
@@ -597,7 +601,13 @@ The session token this gateway wants reaches the **whole account**, including bi
 | `update` | `BaseMutationResponse` | `propertyId: String!`, `emails: [PropertyEmailConfigInput]!` | `emailEnabled: Boolean` |
 | `updateWebhook` | `BaseMutationResponse` | `propertyId: String!`, `subscriptionId: String!`, `updateWebhook: String!` | — |
 
-### `query HexometerIssues` — fields UNKNOWN (not discovered)
+### `query HexometerIssues` — 3 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getIssueResultCSV` | `GetIssuesCsvResponseType` | `settings: GetHexometerIssueSettings!` | — |
+| `getIssueResultPDF` | `GetIssuesPdfResponseType` | `settings: GetHexometerIssueSettings!` | — |
+| `getIssues` | `GetIssuesResponseType` | `settings: GetHexometerIssueSettings!` | — |
 
 ### `query HexometerSubProperty` — 6 field(s)
 
@@ -726,11 +736,32 @@ The session token this gateway wants reaches the **whole account**, including bi
 
 ## Account / shared
 
-### `mutation AdminOps` — fields UNKNOWN (not discovered)
+### `mutation AdminOps` — 5 field(s)
 
-### `mutation AlertOps` — fields UNKNOWN (not discovered)
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `registration` | `BaseMutationResponse` | `token: String!`, `username: String!`, `password: String!`, `viewer: Boolean!`, `email: String!` | — |
+| `rescanProperty` | `BaseMutationResponse` | — | `property_id: Int` |
+| `updateHexometerPackageAdmin` | `UpdateHexometerPackageAdminResult` | — | `userId: Int` |
+| `updateMainUserPremiumCreditsPackageAdmin` | `UpdateHexomaticCreditsPricingAdminPackageResult` | — | `settings: UpdateHexomaticCreditsPricingPackageAdminInput` |
+| `updateUserWatchPricingPackageAdmin` | `UpdateHexowatchPricingAdminPackageResult` | — | `settings: UpdateHexowatchPricingAdminPackageInput` |
 
-### `mutation BillingOps` — fields UNKNOWN (not discovered)
+### `mutation AlertOps` — 3 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `createCustomNote` | `CreateCustomNoteResult` | `title: String!`, `date: String!`, `propertyId: Int!` | — |
+| `deleteCustomNote` | `BaseMutationResponse` | `alertId: Int!` | — |
+| `updateCustomNote` | `BaseMutationResponse` | `alertId: Int!` | `date: String`, `title: String` |
+
+### `mutation BillingOps` — 4 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `deleteCreditCard` | `DeleteCardResult` | — | `settings: DeleteCardInput` |
+| `updateMainUserPremiumCreditsPackage` | `UpdateHexomaticCreditsPricingPackageResult` | — | `settings: UpdateHexomaticCreditsPricingPackageInput` |
+| `updateStripeCustomer` | `UpdateStripeCustomerResult` | — | `settings: UpdateStripeCustomerInput` |
+| `updateUserWatchPricingPackage` | `UpdateUserWatchPricingPackageResult` | — | `settings: UpdateUserWatchPricingPackageInput` |
 
 ### `mutation KeywordOps` — 3 field(s)
 
@@ -794,7 +825,11 @@ The session token this gateway wants reaches the **whole account**, including bi
 | --- | --- | --- | --- |
 | `get` | `AlertType` | `monitoringLog: String!`, `property_id: Int!` | — |
 
-### `query Billing` — fields UNKNOWN (not discovered)
+### `query Billing` — 1 field(s)
+
+| Field | Returns | Required | Optional |
+| --- | --- | --- | --- |
+| `getCancellationReasons` | `GetCancellationReasonsResult` | — | `settings: GetCancellationReasonsInput` |
 
 ### `query Keyword` — 1 field(s)
 
