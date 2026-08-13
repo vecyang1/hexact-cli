@@ -68,7 +68,14 @@ def main() -> int:
     add(f"- **{len(namespaces)} namespaces** "
         f"({sum(1 for k in namespaces if k.startswith('query:'))} query, "
         f"{sum(1 for k in namespaces if k.startswith('mutation:'))} mutation)")
-    add(f"- **{total_fields} fields** with recovered signatures")
+    arg_count = sum(
+        len(s.get("required_arguments", [])) + len(s.get("optional_arguments", []))
+        for e in namespaces.values() for s in e["fields"].values()
+    )
+    typed = sum(1 for e in namespaces.values()
+                for s in e["fields"].values() if s.get("returns"))
+    add(f"- **{total_fields} fields**, **{arg_count} arguments**, "
+        f"{typed} with a recovered return type")
     add(f"- {data['request_count']} requests, **{len(data['resolvers_entered'])} "
         "resolvers entered** (must be 0)")
     add("")
@@ -140,13 +147,17 @@ def main() -> int:
                 continue
             add(f"### `{kind} {name}` — {len(fields)} field(s)")
             add("")
-            add("| Field | Required arguments |")
-            add("| --- | --- |")
+            add("| Field | Returns | Required | Optional |")
+            add("| --- | --- | --- | --- |")
             for field, spec in sorted(fields.items()):
-                required = spec["required_arguments"]
-                rendered = ", ".join(
-                    f"`{a['name']}: {a['type']}`" for a in required) or "*none*"
-                add(f"| `{field}` | {rendered} |")
+                required = ", ".join(
+                    f"`{a['name']}: {a['type']}`"
+                    for a in spec.get("required_arguments", [])) or "—"
+                optional = ", ".join(
+                    f"`{a['name']}: {a['type']}`"
+                    for a in spec.get("optional_arguments", [])) or "—"
+                returns = f"`{spec['returns']}`" if spec.get("returns") else "—"
+                add(f"| `{field}` | {returns} | {required} | {optional} |")
             add("")
 
     Path(args.out).write_text("\n".join(lines) + "\n", encoding="utf-8")

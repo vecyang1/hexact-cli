@@ -49,11 +49,54 @@ HOSTS = {
     "hexometer": "https://api.hexometer.com/v2/ql",
 }
 BOGUS_ARG = "zzzNotAnArg: 1"
+MAX_FRONTIER = 90
 SUGGESTION = re.compile(r'Did you mean (.+?)\?(?:\s|$)')
 REQUIRED_ARG = re.compile(
     r'Field "(?P<field>[^"]+)" argument "(?P<arg>[^"]+)" of type "(?P<type>[^"]+)" is required'
 )
 UNKNOWN_FIELD = re.compile(r'Cannot query field "(?P<field>[^"]+)" on type "(?P<parent>[^"]+)"')
+# One guarded probe carries three separate facts. They must be parsed by message
+# shape, not by scanning for "Did you mean" globally: the return-type message
+# carries its own suggestion (`update { ... }`) which is not a name.
+RETURN_TYPE = re.compile(
+    r'Field "(?P<field>[^"]+)" of type "(?P<type>[^"]+)" must have a selection'
+)
+UNKNOWN_ARG = re.compile(
+    r'Unknown argument "(?P<given>[^"]+)" on field "(?P<field>[^"]+)" of type '
+    r'"(?P<parent>[^"]+)"\.(?:\s*Did you mean (?P<suggest>.+?)\?)?'
+)
+ARG_TYPE = re.compile(r'Expected type (?P<type>.+?), found')
+
+# Argument names cluster around a small vocabulary. Same edit-distance limit
+# applies, so these are sized like real argument names rather than generic.
+ARG_SEEDS = (
+    "idZz", "idsZz", "limitZz", "offsetZz", "pageZz", "searchZz", "filterZz",
+    "sortZz", "orderZz", "nameZz", "urlZz", "emailZz", "enabledZz", "activeZz",
+    "statusZz", "typeZz", "settingsZz", "inputZz", "dataZz", "tokenZz",
+    "user_idZz", "workspace_idZz", "property_idZz", "campaign_idZz",
+    "contact_idZz", "workflow_idZz", "tag_idZz", "automation_idZz",
+    "watch_property_idZz", "dateZz", "fromZz", "toZz", "countZz", "valueZz",
+    "keyZz", "queryZz", "textZz", "titleZz", "descriptionZz", "webhookUrlZz",
+)
+
+# Every argument name seen anywhere, fed back as a seed everywhere. Seeded with
+# names recovered by hand so the first run already benefits.
+ARG_VOCABULARY: set[str] = {
+    "emailEnabled", "emails", "settings", "webhookUrl", "subscriptionId",
+    "watch_property_id", "watch_properties_ids", "watch_integration_id",
+    "watch_integration_ids", "monitoring_interval", "change_notification_level",
+    "pause_after_first_change_event", "tool_settings", "address", "address_list",
+    "tool", "active", "tags", "user_agent", "workflow_id", "workflows_ids",
+    "property_id", "workspace_id", "campaign_id", "contact_id", "limit",
+    "offset", "search", "sort", "order", "ids", "id", "name", "type", "status",
+}
+_vocabulary_lock = threading.Lock()
+
+
+def remember_arguments(names: set[str]) -> None:
+    with _vocabulary_lock:
+        ARG_VOCABULARY.update(names)
+
 
 _print_lock = threading.Lock()
 
@@ -226,21 +269,121 @@ def walk_roots(gateway: Gateway, kind: str, pool: ThreadPoolExecutor) -> set[str
     return known
 
 
-def signature(gateway: Gateway, namespace: str, field: str, kind: str) -> dict:
-    """Required arguments for one field, WITHOUT entering its resolver.
+def _arg_suggestions(gateway: Gateway, payload: dict, field: str) -> set[str]:
+    """Argument names, parsed only from the Unknown-argument message.
 
-    The bogus argument is the whole point -- see the module docstring.
+    Deliberately not the global "Did you mean" scan used for field names: the
+    return-type error carries `Did you mean "update { ... }"?`, which is a
+    selection hint, not an argument.
     """
-    payload = gateway.post(
-        f"{kind} {{ {namespace} {{ {field}({BOGUS_ARG}) {{ __typename }} }} }}"
-    )
-    arguments = [
+    names: set[str] = set()
+    for message in gateway.messages(payload):
+        match = UNKNOWN_ARG.search(message)
+        if not match or match.group("field") != field or not match.group("suggest"):
+            continue
+        for candidate in re.split(r",|\bor\b", match.group("suggest")):
+            cleaned = candidate.strip().strip('".,').strip()
+            if cleaned and " " not in cleaned:
+                names.add(cleaned)
+    return names
+
+
+def describe_field(
+    gateway: Gateway, namespace: str, field: str, kind: str, pool: ThreadPoolExecutor
+) -> dict:
+    """Full signature for one field, WITHOUT entering its resolver.
+
+    Recovers three things the first version missed. **Return type**, from
+    `Field "x" of type "T" must have a selection of subfields`. **Optional
+    argument names** -- the first version reported only *required* ones, so a
+    field like `UserWatchSettingsOps.update` rendered as taking no arguments
+    when it in fact takes `emailEnabled` and `emails`, i.e. the reference
+    understated the API rather than merely being terse. And **argument types**,
+    from `Expected type T, found ...` when a value of the wrong type is sent.
+
+    Every probe still carries a bogus argument, so nothing executes.
+    """
+    # No selection set on purpose. `{ __typename }` satisfies the leaf rule, so
+    # the server never emits `must have a selection of subfields` and the return
+    # type stays hidden -- the first version of this function asked with a
+    # selection and recovered `returns: None` for every object field. Omitting
+    # it is still inert because the bogus argument fails validation first.
+    base = gateway.post(f"{kind} {{ {namespace} {{ {field}({BOGUS_ARG}) }} }}")
+    messages = gateway.messages(base)
+    required = [
         {"name": m.group("arg"), "type": m.group("type")}
-        for message in gateway.messages(payload)
+        for message in messages
         for m in [REQUIRED_ARG.search(message)] if m and m.group("field") == field
     ]
-    executed = payload.get("data") is not None
-    return {"required_arguments": arguments, "resolver_was_entered": executed}
+    returns = next(
+        (m.group("type") for message in messages
+         for m in [RETURN_TYPE.search(message)] if m and m.group("field") == field),
+        None,
+    )
+    entered = base.get("data") is not None
+
+    # Closure over argument names: seeds, then near-misses of what they found.
+    #
+    # `ARG_VOCABULARY` is the fix for the second miss found during calibration.
+    # Argument names repeat heavily across a schema, and the suggester's reach
+    # is bounded by edit distance from the *probe*, so a generic seed like
+    # `emailZz` never reaches `emailEnabled` (distance 5, threshold 4). Feeding
+    # every name discovered anywhere back in as a seed everywhere means the
+    # walk gets strictly better the more it sees, instead of re-rolling the
+    # same too-short seeds per field.
+    known_args: set[str] = {a["name"] for a in required}
+    with _vocabulary_lock:
+        vocabulary = sorted(ARG_VOCABULARY)
+    # Capped: the vocabulary grows as the walk proceeds, and an uncapped
+    # frontier would make per-field cost climb without bound over 342 fields.
+    frontier = list(dict.fromkeys(
+        list(ARG_SEEDS) + [v for name in vocabulary for v in variants(name)]
+    ))[:MAX_FRONTIER]
+    for _ in range(3):
+        if not frontier:
+            break
+        documents = [
+            f"{kind} {{ {namespace} {{ {field}({probe}: 1) {{ __typename }} }} }}"
+            for probe in frontier
+        ]
+        found: set[str] = set()
+        for payload in pool.map(gateway.post, documents):
+            found |= _arg_suggestions(gateway, payload, field)
+            entered = entered or payload.get("data") is not None
+        fresh = found - known_args
+        if not fresh:
+            break
+        known_args |= fresh
+        remember_arguments(fresh)
+        frontier = [v for name in fresh for v in variants(name)]
+
+    # Type of each argument: send an Int and read what it expected instead.
+    optional = sorted(known_args - {a["name"] for a in required})
+    types: dict[str, str] = {}
+    for literal in ('"zZq"', "123"):
+        pending = [name for name in optional if name not in types]
+        if not pending:
+            break
+        documents = [
+            f"{kind} {{ {namespace} {{ {field}({name}: {literal}) {{ __typename }} }} }}"
+            for name in pending
+        ]
+        for name, payload in zip(pending, pool.map(gateway.post, documents)):
+            entered = entered or payload.get("data") is not None
+            for message in gateway.messages(payload):
+                match = ARG_TYPE.search(message)
+                if match:
+                    types[name] = match.group("type").strip()
+                    break
+
+    return {
+        "returns": returns,
+        "required_arguments": required,
+        "optional_arguments": [
+            {"name": name, "type": types.get(name, "UNKNOWN")} for name in optional
+        ],
+        "resolver_was_entered": entered,
+    }
 
 
 def main() -> int:
@@ -276,10 +419,9 @@ def main() -> int:
                     fields = sorted(walk_fields(
                         gateway, root, kind, pool, prior_fields.get(f"{kind}:{root}")))
                     log(f"    {root}: {len(fields)} fields")
-                    signatures = pool.map(
-                        lambda f, r=root, k=kind: signature(gateway, r, f, k), fields
-                    )
-                    entry["fields"] = dict(zip(fields, signatures))
+                    entry["fields"] = {
+                        f: describe_field(gateway, root, f, kind, pool) for f in fields
+                    }
                 result["namespaces"][f"{kind}:{root}"] = entry
 
     result["request_count"] = gateway.requests

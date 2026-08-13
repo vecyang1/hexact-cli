@@ -893,3 +893,45 @@ class TestLiveRunRegressions(unittest.TestCase):
                                    "error": True, "message": "Permission denied"}}}):
             verdict, _ = auth.status()
         self.assertEqual(verdict, "authenticated")
+
+
+class TestGatewayDocCoversWhatTheCodeUses(unittest.TestCase):
+    """Rung-4: the generated reference must describe every operation we call.
+
+    `docs/GATEWAY.md` is regenerated from a live walk whose recall is a lower
+    bound, so a future run can silently come back with fewer names. That would
+    leave the doc quietly not describing operations the CLI depends on. This
+    does not test that the vendor still has them -- only that the reference and
+    the allowlist have not drifted apart.
+    """
+
+    def setUp(self):
+        self.doc = Path(__file__).resolve().parent.parent / "docs" / "GATEWAY.md"
+        if not self.doc.is_file():
+            self.skipTest("docs/GATEWAY.md not generated in this checkout")
+        self.text = self.doc.read_text(encoding="utf-8")
+
+    def test_every_allowlisted_mutation_appears_in_the_reference(self):
+        for operation in sorted(graphql.MUTATION_ALLOWLIST):
+            namespace, _, field = operation.partition(".")
+            self.assertIn(namespace, self.text,
+                          f"{namespace} missing from GATEWAY.md")
+            self.assertIn(f"`{field}`", self.text,
+                          f"{operation} missing from GATEWAY.md")
+
+    def test_the_reference_states_it_is_a_lower_bound(self):
+        """The caveat is the most load-bearing sentence in the document.
+
+        Without it a namespace rendered with zero fields reads as 'this is
+        empty' rather than 'the probe did not reach it'. Pinned as prose
+        because the claim is a judgement; only its presence is decidable.
+        """
+        lowered = self.text.lower()
+        self.assertTrue(
+            "lower bound" in lowered or "not discovered" in lowered
+            or "undiscovered" in lowered,
+            "GATEWAY.md must say its coverage is a lower bound",
+        )
+
+    def test_the_reference_records_the_no_execute_guarantee(self):
+        self.assertIn("resolvers entered", self.text.lower())
