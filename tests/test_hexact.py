@@ -10,6 +10,7 @@ under test. Individual tests opt back in with ``mock.patch.dict``.
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import contextlib
 import http.client
@@ -38,6 +39,22 @@ _MANAGED_VARS = (
 )
 for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
+
+# `HEXACT_HOME` is the exception to the scrub above, and getting it wrong is
+# expensive in a way the others are not. Popping a *credential* variable makes
+# the resolver find nothing, which is what the tests want. Popping this one
+# makes `config._config_dir()` fall back to the real `~/.config/hexact`, so any
+# test that reaches a writer writes to the developer's own credential store.
+# Measured 2026-08-14: adding a second writer to the login command -- one the
+# existing test did not patch -- put a one-character fake token into the real
+# `credentials.env`, which then broke `hexact` on this machine until it was
+# noticed. Point it somewhere disposable for the whole session instead, so the
+# guarantee is structural rather than per-test discipline. Individual tests
+# still override it with their own TemporaryDirectory when they need isolation
+# from each other.
+_SESSION_HOME = TemporaryDirectory(prefix="hexact-tests-home-")
+os.environ["HEXACT_HOME"] = _SESSION_HOME.name
+atexit.register(_SESSION_HOME.cleanup)
 
 from hexact import (  # noqa: E402
     auth, cli, cli_auth, cli_hexomatic, cli_hexowatch, cli_watch_rest, config,
@@ -830,12 +847,20 @@ class TestLiveRunRegressions(unittest.TestCase):
 
         Storing `token` produced a credential that authenticated for about an
         hour, so every check passed, and then could never be renewed.
+
+        `login` returns both now, but the labels are the load-bearing part:
+        whichever one the caller persists as *the* session credential must be
+        the refresh token. Keeping the access token alongside it is what makes
+        the CLI usable while the exchange is broken; confusing the two is the
+        original bug.
         """
         response = {"UserOps": {"authRefreshToken": {
             "error": False, "message": "",
             "token": "SHORT_LIVED_ACCESS", "refresh_token": "LONG_LIVED_REFRESH"}}}
         with mock.patch.object(auth.graphql, "execute", return_value=response):
-            self.assertEqual(auth.login("a@b.c", "pw"), "LONG_LIVED_REFRESH")
+            tokens = auth.login("a@b.c", "pw")
+        self.assertEqual(tokens["refresh"], "LONG_LIVED_REFRESH")
+        self.assertEqual(tokens["access"], "SHORT_LIVED_ACCESS")
 
     def test_login_selects_refresh_token_in_the_query_document(self):
         """A field absent from the selection comes back as None, not an error."""
@@ -1243,26 +1268,41 @@ class TestLoginRefusesAnUnrenewableCredential(unittest.TestCase):
                 auth.login("a@b.com", "pw")
         self.assertIn("ACCESS token", str(caught.exception))
 
-    def test_login_accepts_a_genuine_refresh_token(self):
+    def test_login_returns_both_tokens_and_labels_them_correctly(self):
         good = _jwt(30 * 24 * 3600)
         payload = {"UserOps": {"authRefreshToken": {
-            "error": False, "token": "x", "refresh_token": good}}}
+            "error": False, "token": "short-lived", "refresh_token": good}}}
         with mock.patch.object(graphql, "execute", return_value=payload):
-            self.assertEqual(auth.login("a@b.com", "pw"), good)
+            self.assertEqual(auth.login("a@b.com", "pw"),
+                             {"refresh": good, "access": "short-lived"})
 
-    def test_nothing_is_stored_when_the_exchange_fails(self):
-        """The whole point: a credential that cannot be exchanged never lands.
+    def test_a_failed_exchange_keeps_the_credential_it_could_not_verify(self):
+        """The reversal of an earlier rule, and the reason for it.
 
-        Asserts on the *absence* of a write. A test that only checked the raised
-        exception would pass even if the token had already been persisted before
-        the check ran, which is precisely the ordering bug being fixed.
+        This used to assert the opposite -- that nothing is stored when the
+        exchange fails -- on the reasoning that a credential which cannot be
+        renewed should never land. That reasoning was about the *wrong* failure.
+        It was written for a token that was itself bad, and it also fires when
+        the token is perfect and the exchange is broken.
+
+        Measured 2026-08-14 against the live gateway: a login produced a genuine
+        360-hour refresh token, `classify_credential` agreed, and
+        `UserOps.authAccessToken` refused it anyway -- returning exactly what it
+        returns for a deliberately garbage token, `{"token": null, "error":
+        false, "message": ""}`. The user had typed their password and ended with
+        nothing stored at all, from a login that had worked.
+
+        So verification reports; it does not decide whether the credential
+        survives. Both tokens are kept, the command exits non-zero, and the
+        receipt says renewal is unproven.
         """
         refresh = _jwt(30 * 24 * 3600)
 
         def fake_execute(document, variables=None, **kwargs):
             if "authRefreshToken" in document:
                 return {"UserOps": {"authRefreshToken": {
-                    "error": False, "token": "x", "refresh_token": refresh}}}
+                    "error": False, "token": "one-hour-token",
+                    "refresh_token": refresh}}}
             # The gateway's house style for "no": success envelope, null token.
             return {"UserOps": {"authAccessToken": {"error": False, "token": None}}}
 
@@ -1273,14 +1313,40 @@ class TestLoginRefusesAnUnrenewableCredential(unittest.TestCase):
         args = cli.build_parser().parse_args(
             ["auth", "login", "--email", "a@b.com", "--store", "file",
              "--op-item", "T", "--op-vault", "V"])
+        err = io.StringIO()
         with mock.patch.object(auth, "prompt_password", return_value="pw"), \
                 mock.patch.object(graphql, "execute", side_effect=fake_execute), \
                 mock.patch.object(auth, "store_refresh_token") as store_file, \
+                mock.patch.object(auth, "store_access_token") as store_access, \
                 mock.patch.object(auth, "store_refresh_token_1password") as store_op:
-            with self.assertRaises(auth.LoginError):
-                cli.cmd_auth_login(args)
-        store_file.assert_not_called()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                code = cli_auth.cmd_auth_login(args)
+
+        self.assertEqual(code, 1, "an unproven renewal is a finding, not a pass")
+        store_file.assert_called_once_with(refresh)
+        store_access.assert_called_once_with("one-hour-token")
         store_op.assert_not_called()
+        self.assertIn("RENEWAL IS UNPROVEN", err.getvalue())
+
+    def test_that_failure_does_not_guess_at_a_cause_it_cannot_know(self):
+        """The gateway answers a valid token and a garbage one identically, so
+        naming revocation or expiry would be invention."""
+        message = auth._exchange_failure_remedy(_jwt(30 * 24 * 3600),
+                                                just_logged_in=True)
+        self.assertIn("cannot say why", message)
+        for guess in ("revoked", "password changed", "expired"):
+            self.assertNotIn(guess, message)
+
+    def test_both_writers_reach_a_name_the_resolver_actually_reads(self):
+        """A writer that stores under a name nothing looks up would report the
+        credential missing right after saving it."""
+        with TemporaryDirectory() as home:
+            with mock.patch.dict(os.environ, {"HEXACT_HOME": home}, clear=False):
+                auth.store_refresh_token("r-value")
+                auth.store_access_token("a-value")
+                self.assertEqual(config.resolve_key(config.HEXOWATCH_SESSION), "r-value")
+                self.assertEqual(config.resolve_key(config.HEXOWATCH_ACCESS), "a-value")
 
 
 class TestTagWritesAreConfirmedNotClaimed(unittest.TestCase):

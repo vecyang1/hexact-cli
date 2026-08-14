@@ -222,6 +222,35 @@ MUTATIONS = [
         "    if False:",
     ),
     (
+        # The reversal that 0.7.1 exists for: verification deciding whether the
+        # credential survives. Restoring the old order silently throws away a
+        # perfectly good token whenever the *exchange* is what is broken.
+        "a failed exchange goes back to discarding the credential",
+        "hexact/cli_auth.py",
+        "    renewal, detail = \"proven\", None\n    try:\n        auth.verify_renewable(refresh)",
+        "    renewal, detail = \"proven\", None\n    if True:\n        auth.verify_renewable(refresh)",
+    ),
+    (
+        "login drops the access token that keeps the CLI usable",
+        "hexact/auth.py",
+        '    return {"refresh": token, "access": str(access) if access else None}',
+        '    return {"refresh": token, "access": None}',
+    ),
+    (
+        # A writer whose name the resolver does not read stores the credential
+        # and then reports it missing.
+        "the access-token writer stores under a name nothing reads back",
+        "hexact/auth.py",
+        "    return _store_env_line(_ENV_VARS[HEXOWATCH_ACCESS], token)",
+        '    return _store_env_line("HEXOWATCH_ACCESS", token)',
+    ),
+    (
+        "the exchange failure starts guessing at a cause again",
+        "hexact/auth.py",
+        '            "deliberately invalid one the same way: token null, error false, "',
+        '            "one the same way -- it was probably revoked or expired. "',
+    ),
+    (
         "doctor stops looking at the gateway credential half the commands need",
         "hexact/cli.py",
         '    if verdict == "rejected":',

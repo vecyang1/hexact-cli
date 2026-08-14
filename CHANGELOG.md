@@ -7,6 +7,45 @@ several of these releases exist because an earlier claim in this repository
 turned out to be wrong, and a changelog that hides that teaches the next reader
 to trust the wrong sentence.
 
+## 0.7.1 — 2026-08-14
+
+The first real login since the exchange broke, and it cost the user their
+credential.
+
+- **Fixed: a failed exchange threw away a perfectly good refresh token.**
+  `auth login` verified before storing, so when `UserOps.authAccessToken`
+  refused the token, nothing was written — the user typed their password, the
+  gateway issued a genuine 360-hour refresh token valid until 2026-08-29,
+  `classify_credential` agreed it was a refresh token, and `auth status` then
+  reported `missing`. The order was written for the wrong failure: it assumed a
+  bad token, and it also fires when the token is perfect and the *exchange* is
+  broken. **Store first, then verify and report.** The command exits 1 when
+  renewal is unproven, and says so in as many words.
+- **`login` keeps the access token from the same response.** `UserLoginResponse`
+  carries both; earlier builds dropped `token` on the reasoning that an access
+  token on disk is a liability with no benefit. That held until the mint stopped
+  working — it is now the only thing that makes the CLI usable, it is the
+  narrower of the two credentials, and it expires on its own. It goes into the
+  same owner-only `credentials.env` under `HEXOWATCH_ACCESS_TOKEN`, which the
+  resolver already reads.
+- **Fixed: the exchange failure invented a cause.** It said the token had been
+  *"revoked, the password changed, or it simply expired"* on the same line as
+  its own evidence that the token was **still valid**. Measured against the live
+  gateway: `authAccessToken` answers a deliberately garbage token with
+  byte-identical `{"token": null, "error": false, "message": ""}`, so the
+  response carries no information about which happened. It now says that, and
+  names no cause it cannot support. The login path also stopped describing "the
+  stored value" — nothing is stored at that point — and stopped prescribing the
+  command that had just failed.
+- **Fixed, hermeticity: the test suite wrote to the real `~/.config/hexact/`.**
+  `HEXACT_HOME` was *scrubbed* at import along with the credential variables,
+  and scrubbing it selects the developer's actual credential store rather than
+  nothing. Adding a second writer to the login command — one the existing test
+  did not patch — put a one-character fake token into the real
+  `credentials.env` and broke `hexact` on the machine running the tests. The
+  variable now points at a disposable directory for the whole session, so the
+  guarantee is structural instead of per-test discipline.
+
 ## 0.7.0 — 2026-08-14
 
 **Everything here was found by installing 0.6.0 and using it**, which nobody had

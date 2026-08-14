@@ -255,8 +255,8 @@ def cmd_duplicates(args: argparse.Namespace) -> int:
             # repository. The claim was true of REST and was never rescoped, so
             # the one place that produces a list of things to switch off kept
             # recommending the weaker of the two remedies it ships.
-            print(f"\n  A real duplicate costs twice: one check against the "
-                  f"monthly allowance, and one extra notification per change.")
+            print("\n  A real duplicate costs twice: one check against the "
+                  "monthly allowance, and one extra notification per change.")
             print(f"    hexact watch delete {ids} --yes   # removes them")
             print(f"    hexact watch pause {ids}          # REST-only fallback")
             print("\n  Delete is irreversible and Hexowatch has no trash. It "

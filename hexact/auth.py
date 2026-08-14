@@ -43,6 +43,10 @@ from .config import (
     credentials_path,
     resolve_key,
 )
+# The variable names the resolver actually reads. Imported rather than retyped
+# so a writer and its reader cannot drift apart -- writing to a name nothing
+# looks up would store the credential and still report it missing.
+from .config import _ENV_VARS  # noqa: PLC2701
 
 # Writing an item is not gated on a biometric prompt for a service account, but
 # it is for an interactive one. A bounded wait turns "hung forever in cron" into
@@ -204,7 +208,7 @@ def _token_from_response(
     return str(token)
 
 
-def _exchange_failure_remedy(refresh: str) -> str:
+def _exchange_failure_remedy(refresh: str, *, just_logged_in: bool = False) -> str:
     """Explain a failed exchange from what the credential in hand actually is.
 
     The wrong-field diagnosis is real and cost a day, so it is worth naming --
@@ -216,35 +220,65 @@ def _exchange_failure_remedy(refresh: str) -> str:
     token is far commoner, and sending that reader to look for the wrong field
     wastes the one message they will read.
     """
-    common = (
-        "  Fix: re-run `hexact auth login --email <you>`. Or set "
-        "HEXOWATCH_ACCESS_TOKEN to use an access token directly for the next "
-        "hour."
-    )
+    held = "the value you supplied" if just_logged_in else "the stored value"
     if classify_credential(refresh)["kind"] == "access":
         return (
-            "  Cause: the stored value is an access token, not a refresh token "
+            f"  Cause: {held} is an access token, not a refresh token "
             f"({describe_credential(refresh)}). They are different fields on "
             "UserLoginResponse and only the refresh token can be exchanged.\n"
-            + common
+            "  Fix: re-run `hexact auth login --email <you>`. Or set "
+            "HEXOWATCH_ACCESS_TOKEN to use an access token directly for the "
+            "next hour."
+        )
+
+    # Everything below is the case where the credential is exactly right and
+    # the gateway said no anyway. Do not guess at a cause here. Measured
+    # 2026-08-14: `authAccessToken` answers a *deliberately garbage* token with
+    # byte-identical `{"token": null, "error": false, "message": ""}`, so this
+    # response carries no information about which of revocation, expiry or a
+    # server-side change happened -- and the previous wording asserted all
+    # three next to its own evidence that the token was still valid.
+    if just_logged_in:
+        return (
+            "  What this means: the login itself worked -- the gateway issued "
+            f"{describe_credential(refresh)}. What failed is the *exchange*, "
+            "UserOps.authAccessToken, which answers a valid token and a "
+            "deliberately invalid one the same way: token null, error false, "
+            "no message. So this cannot say why, and will not pretend to.\n"
+            "  What was kept: both tokens from that login were stored, so "
+            "commands work now. Only automatic renewal is unproven.\n"
+            "  Check: hexact auth status"
         )
     return (
-        "  Cause: the gateway refused the stored refresh token. The commonest "
-        "reasons are that it was revoked, that the account's password changed, "
-        f"or that it simply expired -- it is {describe_credential(refresh)}.\n"
-        + common
+        f"  Cause: unknown. The stored value is {describe_credential(refresh)}, "
+        "and the gateway's refusal is byte-identical to what it returns for a "
+        "token that was never valid, so the response cannot distinguish a "
+        "revoked credential from a broken exchange.\n"
+        "  Fix: `hexact auth login --email <you>` mints a fresh pair and keeps "
+        "both, which works even while the exchange does not. Or set "
+        "HEXOWATCH_ACCESS_TOKEN directly."
     )
 
 
-def login(email: str, password: str) -> str:
-    """Exchange credentials for a **refresh** token.
+def login(email: str, password: str) -> dict[str, str | None]:
+    """Exchange credentials for the pair ``UserLoginResponse`` carries.
 
     ``password`` is used for exactly this call and is never stored, logged, or
     echoed. Callers should source it from :func:`prompt_password`.
 
-    Returns ``refresh_token``, not ``token``. Returning the latter is the bug
-    this function exists to not have: it authenticates, so every check passes,
-    and it stops working an hour later with no way to renew it.
+    Returns **both** fields: ``{"refresh": ..., "access": ...}``. Earlier builds
+    returned only the refresh token and dropped ``token`` on the floor, on the
+    reasoning that an access token on disk is a liability with no benefit. That
+    reasoning held until the exchange stopped working: measured 2026-08-14, a
+    login produced a genuine 360-hour refresh token that
+    ``UserOps.authAccessToken`` then refused, leaving a correct credential and
+    no way to spend it. The access token from this same response is the answer
+    to that, and it costs nothing to keep.
+
+    Which field is *which* still matters and is still checked below -- returning
+    the access token as the refresh token is the bug this function exists to not
+    have: it authenticates, so every check passes, and it stops working an hour
+    later with no way to renew it.
     """
     data = graphql.execute(_REFRESH_MUTATION, {"email": email, "password": password})
     token = _token_from_response(
@@ -272,7 +306,11 @@ def login(email: str, password: str) -> str:
             "tomorrow. The gateway's response shape may have changed; re-derive "
             "UserLoginResponse before trusting this path again."
         )
-    return token
+
+    # `token` on the same response is a short-lived access token. Keep it: it is
+    # what makes the CLI usable in the hour after a login whose exchange failed.
+    access = (((data.get("UserOps") or {}).get("authRefreshToken") or {}).get("token"))
+    return {"refresh": token, "access": str(access) if access else None}
 
 
 def verify_renewable(refresh_token: str) -> None:
@@ -286,12 +324,29 @@ def verify_renewable(refresh_token: str) -> None:
 
     One extra request at login turns "unrenewable credential" from a silent
     failure discovered later into a loud one discovered now.
+
+    **It must not decide whether the credential is kept.** Until 0.7.1 a failure
+    here aborted the login, so a correct 360-hour refresh token -- minted
+    seconds earlier, classified as a refresh token, valid for another fortnight
+    -- was discarded because a *second* call failed. The user typed their
+    password and ended with nothing stored. A verification step that destroys
+    the thing it was checking is worse than no verification: store first, then
+    report what is unproven.
     """
-    minted = access_token(refresh_token=refresh_token)
+    try:
+        minted = access_token(refresh_token=refresh_token)
+    except SessionError:
+        # Re-raise with the login-flavoured wording. The generic remedy talks
+        # about "the stored value" and prescribes running the login command,
+        # which is exactly what the caller is in the middle of doing.
+        raise SessionError(
+            "UserOps.authAccessToken would not exchange the refresh token.\n"
+            + _exchange_failure_remedy(refresh_token, just_logged_in=True)
+        ) from None
     if not minted:
-        raise LoginError(
+        raise SessionError(
             "the refresh token was accepted but minted no access token; "
-            "refusing to store a credential that cannot be exchanged."
+            "renewal is unproven."
         )
 
 
@@ -407,10 +462,11 @@ def read_password_from_stdin() -> str:
     return line.rstrip("\r\n")
 
 
-def store_refresh_token(token: str) -> Path:
-    """Write the refresh token to the credentials file, owner-only.
+def _store_env_line(name: str, token: str) -> Path:
+    """Replace one ``NAME=value`` line in the credentials file, owner-only.
 
-    Returns the path so the caller can print a receipt. The token itself is
+    Shared by both token writers so the file-mode discipline is written once.
+    Returns the path so the caller can print a receipt; the token itself is
     never returned to a caller that might print it.
     """
     path = credentials_path()
@@ -420,9 +476,9 @@ def store_refresh_token(token: str) -> Path:
     if path.is_file():
         lines = [
             line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.strip().startswith("HEXOWATCH_REFRESH_TOKEN=")
+            if not line.strip().startswith(f"{name}=")
         ]
-    lines.append(f"HEXOWATCH_REFRESH_TOKEN={token}")
+    lines.append(f"{name}={token}")
 
     # Create with the right mode from the start rather than chmod-ing after:
     # between the write and the chmod there is a window where the secret is
@@ -432,6 +488,25 @@ def store_refresh_token(token: str) -> Path:
         handle.write("\n".join(lines) + "\n")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return path
+
+
+def store_refresh_token(token: str) -> Path:
+    """Write the refresh token to the credentials file, owner-only."""
+    return _store_env_line(_ENV_VARS[HEXOWATCH_SESSION], token)
+
+
+def store_access_token(token: str) -> Path:
+    """Write the short-lived access token to the credentials file, owner-only.
+
+    This used to be refused on the grounds that an access token on disk is a
+    liability with no benefit, since minting a fresh one costs one request.
+    That stopped being true the day the mint itself stopped working: with
+    `authAccessToken` refusing a valid refresh token, the access token issued
+    alongside it is the only thing that makes the CLI usable at all. It is also
+    the *narrower* of the two credentials and it expires on its own, so it is
+    strictly safer than what already sits in this file.
+    """
+    return _store_env_line(_ENV_VARS[HEXOWATCH_ACCESS], token)
 
 
 def store_refresh_token_1password(
