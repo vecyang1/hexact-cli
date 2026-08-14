@@ -7,6 +7,40 @@ several of these releases exist because an earlier claim in this repository
 turned out to be wrong, and a changelog that hides that teaches the next reader
 to trust the wrong sentence.
 
+## 0.7.2 — 2026-08-14
+
+**Fixed: on a Python with no CA certificates, every single request failed and
+blamed the network.** A zero-dependency client inherits whatever trust store the
+interpreter has, and a python.org build has *none* — `ssl.create_default_context()`
+returns 0 certificates and points at a `cert.pem` that only exists after someone
+runs "Install Certificates.command". Nobody runs it, least of all when the
+interpreter was picked for them by `pipx --python`. The visible symptom was
+
+```
+API error: URLError calling the GraphQL gateway:
+  <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] … unable to get local issuer certificate>
+```
+
+directly after typing a password, which reads as a server or network fault and
+sends the reader nowhere near their own interpreter. Measured on this machine:
+Homebrew 3.14 verifies fine but `pipx`'s `uv` backend refuses it (empty
+`platform.mac_ver()`), while the python.org 3.12 that `uv` accepts cannot verify
+anything — so *which* interpreter pipx settles on decides whether the client
+works at all.
+
+`hexact.http.ssl_context()` now falls back to the platform CA bundle
+(`/etc/ssl/cert.pem` and the usual Linux/Homebrew locations) when Python brought
+none, and both transports use it. **Verification is never disabled** — that is
+asserted by a test that will outlive this note. When no bundle exists anywhere
+it still fails closed, and the error now names the cause instead of the network.
+
+- The printed-command gate learned to tell commands from English. "reinstall
+  hexact on an interpreter…" was graded as the command `hexact on an` and
+  reported as a finding — the failure mode that gets a useful test deleted. It
+  now grades only mentions whose first word is a real top-level command, which
+  is the honest scope; 33 of them, still RED-proved against the defect it was
+  written for.
+
 ## 0.7.1 — 2026-08-14
 
 The first real login since the exchange broke, and it cost the user their

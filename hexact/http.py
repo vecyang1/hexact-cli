@@ -14,8 +14,11 @@ Two properties of these APIs shape this module, and both are traps:
 
 from __future__ import annotations
 
+import functools
 import json
+import os
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +27,65 @@ from typing import Any
 from . import __version__
 
 DEFAULT_TIMEOUT_SECONDS = 60
+
+# Where a trust store lives when the interpreter did not bring one. macOS first
+# because that is where this bites: a python.org build ships an *unpopulated*
+# `etc/openssl/cert.pem` and expects the user to have run "Install
+# Certificates.command" -- which nobody does when the interpreter was chosen
+# for them by `pipx --python`.
+_SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/cert.pem",                            # macOS, and the BSDs
+    "/opt/homebrew/etc/ca-certificates/cert.pem",   # Homebrew, Apple silicon
+    "/usr/local/etc/openssl@3/cert.pem",            # Homebrew, Intel
+    "/etc/ssl/certs/ca-certificates.crt",           # Debian, Ubuntu
+    "/etc/pki/tls/certs/ca-bundle.crt",             # RHEL, Fedora
+)
+
+CERT_HINT = (
+    "This Python has no CA certificates loaded, so it cannot verify any HTTPS "
+    "certificate. That is the interpreter's trust store -- not the server, not "
+    "your network, and not your credential.\n"
+    "  Check: python3 -c \"import ssl; "
+    "print(len(ssl.create_default_context().get_ca_certs()))\"  -- 0 means this.\n"
+    "  Fix: export SSL_CERT_FILE=/etc/ssl/cert.pem, or reinstall hexact on an "
+    "interpreter that ships a trust store."
+)
+
+
+@functools.lru_cache(maxsize=1)
+def ssl_context() -> ssl.SSLContext:
+    """A verifying context, with a system CA bundle when Python brought none.
+
+    Verification is never disabled; the only thing added here is *finding* a
+    trust store. Measured 2026-08-14: `/usr/local/bin/python3.12`, a python.org
+    build, loads **zero** CA certificates and points at a `cert.pem` that does
+    not exist, so every request died with `CERTIFICATE_VERIFY_FAILED` -- which
+    reads as a network or server fault and sends the reader somewhere else
+    entirely. Worse, which interpreter you get is decided by `pipx`, so the
+    same install command produces a working client on one machine and a
+    completely offline one on the next.
+    """
+    context = ssl.create_default_context()
+    if context.get_ca_certs():
+        return context
+    for bundle in _SYSTEM_CA_BUNDLES:
+        if not os.path.isfile(bundle):
+            continue
+        try:
+            context.load_verify_locations(cafile=bundle)
+        except OSError:
+            continue
+        if context.get_ca_certs():
+            return context
+    # Still empty. Return a context that verifies and therefore fails -- loudly
+    # and safely -- never one that does not. Callers attach CERT_HINT so the
+    # failure names its own cause instead of blaming the network.
+    return context
+
+
+def has_trust_store() -> bool:
+    """Whether certificate verification can succeed at all in this process."""
+    return bool(ssl_context().get_ca_certs())
 
 # Cloudflare sits in front of both APIs and rejects urllib's default
 # `Python-urllib/3.x` agent with error 1010 (`browser_signature_banned`) -- a
@@ -101,7 +163,8 @@ def request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                    context=ssl_context()) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -113,7 +176,11 @@ def request(
             redact(f"HTTP {exc.code} from {url}" + (f": {detail}" if detail else ""))
         ) from None
     except urllib.error.URLError as exc:
-        raise HexactAPIError(redact(f"Could not reach {url}: {exc.reason}")) from None
+        # A missing trust store surfaces here as a "could not reach" that
+        # reads like the network is down. Say which it is.
+        hint = "" if has_trust_store() else f"\n{CERT_HINT}"
+        raise HexactAPIError(
+            redact(f"Could not reach {url}: {exc.reason}") + hint) from None
     except Exception as exc:
         # Catch-all, and deliberately last. Anything urllib or http.client can
         # raise may embed the full URL -- and therefore the key -- in its

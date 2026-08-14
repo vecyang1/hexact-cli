@@ -38,7 +38,10 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .http import DEFAULT_TIMEOUT_SECONDS, USER_AGENT, HexactAPIError
+from .http import (
+    CERT_HINT, DEFAULT_TIMEOUT_SECONDS, USER_AGENT, HexactAPIError,
+    has_trust_store, ssl_context,
+)
 
 GRAPHQL_URL = "https://api.hexowatch.com/v2/ql"
 
@@ -149,7 +152,8 @@ def execute(
     request = urllib.request.Request(GRAPHQL_URL, data=body, headers=headers, method="POST")
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout,
+                                    context=ssl_context()) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -166,8 +170,10 @@ def execute(
         # enumerating the exception types that can echo request state has
         # already failed once in this codebase (http.client.InvalidURL is not an
         # OSError). Redact whatever arrives instead of predicting it.
+        hint = "" if has_trust_store() else f"\n{CERT_HINT}"
         raise HexactAPIError(
             redact_token(f"{type(exc).__name__} calling the GraphQL gateway: {exc}", token)
+            + hint
         ) from None
 
     try:

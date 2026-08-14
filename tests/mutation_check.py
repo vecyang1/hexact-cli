@@ -251,6 +251,20 @@ MUTATIONS = [
         '            "one the same way -- it was probably revoked or expired. "',
     ),
     (
+        # The tempting fix, and the one that must never ship.
+        "the TLS fallback turns verification off instead of finding a bundle",
+        "hexact/http.py",
+        "    context = ssl.create_default_context()\n    if context.get_ca_certs():",
+        "    context = ssl._create_unverified_context()\n    if context.get_ca_certs():",
+    ),
+    (
+        "a transport stops using the shared verifying context",
+        "hexact/graphql.py",
+        "        with urllib.request.urlopen(request, timeout=timeout,\n"
+        "                                    context=ssl_context()) as response:",
+        "        with urllib.request.urlopen(request, timeout=timeout) as response:",
+    ),
+    (
         "doctor stops looking at the gateway credential half the commands need",
         "hexact/cli.py",
         '    if verdict == "rejected":',

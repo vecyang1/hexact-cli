@@ -18,6 +18,7 @@ import io
 import json
 import os
 import re
+import ssl
 import stat
 import subprocess
 import sys
@@ -69,6 +70,7 @@ from hexact.cli_common import (  # noqa: E402
     reject_duration_for_a_date_flag,
 )
 from hexact.cli_watch_rest import _normalise_address, resolve_tool_from_payload  # noqa: E402
+from hexact import http as hexact_http  # noqa: E402
 from hexact.http import HexactAPIError, redact, request  # noqa: E402
 
 
@@ -1969,12 +1971,27 @@ class TestEveryCommandThisCLIPrintsCanActuallyRun(unittest.TestCase):
     _MENTION = re.compile(r"hexact ((?:[a-z_]+)(?: [a-z_]+)*(?: --[a-z-]+)*)")
 
     def _mentions(self):
+        """Every mention whose first word is a real top-level command.
+
+        The first-word filter is the honest scope of this check, not laziness.
+        Without it the regex also grades English: "reinstall hexact on an
+        interpreter that ships a trust store" was read as the command
+        `hexact on an` and reported as a finding, which is the failure mode
+        that gets a useful test deleted. A wholly invented top-level group is
+        therefore out of scope here; a wrong *sub*command under a real group,
+        or a flag the command does not accept -- the two things that actually
+        rot -- are both still covered.
+        """
         root = Path(__file__).resolve().parent.parent
+        # Length 1 is a top-level group; the root itself is the empty tuple.
+        groups = {p[0] for p in _command_tree(cli.build_parser()) if len(p) == 1}
         for path in sorted(root.glob("hexact/*.py")):
             text = path.read_text(encoding="utf-8")
             for number, line in enumerate(text.splitlines(), start=1):
                 for found in self._MENTION.finditer(line):
-                    yield f"{path.name}:{number}", found.group(1).split()
+                    words = found.group(1).split()
+                    if words and words[0] in groups:
+                        yield f"{path.name}:{number}", words
 
     def test_the_extractor_finds_the_commands_it_is_supposed_to_grade(self):
         """A regex that matched nothing would make this suite pass vacuously."""
@@ -2190,6 +2207,74 @@ class TestAuthStatusSeparatesNoAnswerFromABadAnswer(unittest.TestCase):
                             code = cli.cmd_doctor(args)
         self.assertIn("gateway", out.getvalue())
         self.assertEqual(code, 1, out.getvalue())
+
+
+class TestATrustStoreIsFoundWithoutEverWeakeningVerification(unittest.TestCase):
+    """A zero-dependency client inherits whatever trust store Python has --
+    and a python.org build has none at all.
+
+    Measured 2026-08-14: `/usr/local/bin/python3.12` returned **0** CA
+    certificates from `ssl.create_default_context()` and pointed at a
+    `cert.pem` that does not exist, because "Install Certificates.command" had
+    never been run. Every request then failed with
+    `CERTIFICATE_VERIFY_FAILED`, which reads as a server or network fault. The
+    reader has no reason to suspect their own interpreter -- especially when
+    the interpreter was chosen for them by `pipx --python`, so the same install
+    command yields a working client on one machine and a wholly offline one on
+    the next.
+
+    The fix must not be the tempting one. Verification stays on; only the
+    *search* for a bundle is added.
+    """
+
+    def _empty_context(self):
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        return context
+
+    def test_verification_is_never_disabled(self):
+        """The property worth a test forever, whatever else changes here."""
+        context = hexact_http.ssl_context()
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_a_bundle_is_loaded_when_python_brought_none(self):
+        hexact_http.ssl_context.cache_clear()
+        try:
+            with mock.patch.object(ssl, "create_default_context",
+                                   side_effect=self._empty_context):
+                context = hexact_http.ssl_context()
+                self.assertTrue(hexact_http.has_trust_store(),
+                                "no system CA bundle was found on this platform")
+                self.assertGreater(len(context.get_ca_certs()), 0)
+                self.assertTrue(context.check_hostname)
+                self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        finally:
+            hexact_http.ssl_context.cache_clear()
+
+    def test_with_no_bundle_anywhere_it_fails_closed_and_names_the_cause(self):
+        """Fail closed, and say which of the three plausible causes it is."""
+        hexact_http.ssl_context.cache_clear()
+        try:
+            with mock.patch.object(ssl, "create_default_context",
+                                   side_effect=self._empty_context), \
+                    mock.patch.object(hexact_http, "_SYSTEM_CA_BUNDLES", ()):
+                self.assertFalse(hexact_http.has_trust_store())
+                self.assertEqual(hexact_http.ssl_context().verify_mode, ssl.CERT_REQUIRED)
+        finally:
+            hexact_http.ssl_context.cache_clear()
+        for phrase in ("no CA certificates", "not the server", "SSL_CERT_FILE"):
+            self.assertIn(phrase, hexact_http.CERT_HINT)
+
+    def test_both_transports_use_it(self):
+        """REST and the gateway are separate `urlopen` call sites; a fix
+        applied to one of them is the shape of bug this repo keeps finding."""
+        root = Path(__file__).resolve().parent.parent
+        for name in ("hexact/http.py", "hexact/graphql.py"):
+            source = (root / name).read_text(encoding="utf-8")
+            self.assertIn("context=ssl_context()", source,
+                          f"{name} opens a connection without the shared context")
 
 
 class TestDoctorDoesNotPassAfterCheckingNothing(unittest.TestCase):
