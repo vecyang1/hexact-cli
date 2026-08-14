@@ -16,11 +16,13 @@ from .output import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, emit
 def cmd_auth_login(args: argparse.Namespace) -> int:
     """Exchange email + password for a stored refresh token.
 
-    The password is read from the terminal, never from a flag: argv is visible
-    to every process on the machine and lands in shell history. It is used for
-    one request and never written anywhere.
+    The password is read from the terminal, or from stdin with
+    ``--password-stdin``; never from a flag. argv is visible to every process on
+    the machine and lands in shell history. It is used for one request and never
+    written anywhere.
     """
-    password = auth.prompt_password()
+    password = (auth.read_password_from_stdin() if args.password_stdin
+                else auth.prompt_password())
     if not password:
         print("No password entered; nothing was sent.", file=sys.stderr)
         return EXIT_USAGE
@@ -55,6 +57,21 @@ def cmd_auth_login(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# A verdict is not a two-way switch. `auth.status()` goes to some trouble to
+# keep "the gateway said no" apart from "the gateway never answered", and until
+# 0.7.0 the exit code threw that away by returning 1 for both -- so a network
+# outage was indistinguishable from a dead credential to anything scripting it,
+# which is exactly how a working token gets rotated during an outage.
+_STATUS_EXIT = {
+    "authenticated": EXIT_OK,       # verified
+    "rejected": EXIT_FAILURE,       # a real finding
+    "missing": EXIT_USAGE,          # nothing to check
+    "unknown": EXIT_USAGE,          # could not check
+}
+_STATUS_MARKS = {"authenticated": "OK  ", "rejected": "FAIL",
+                 "missing": "NONE", "unknown": "????"}
+
+
 def cmd_auth_status(args: argparse.Namespace) -> int:
     """Report whether the stored token actually works.
 
@@ -63,8 +80,14 @@ def cmd_auth_status(args: argparse.Namespace) -> int:
     gets rotated for no reason.
     """
     verdict, detail = auth.status()
-    marks = {"authenticated": "OK  ", "rejected": "FAIL",
-             "missing": "SKIP", "unknown": "????"}
-    emit({"verdict": verdict, "detail": detail}, args.json,
-          lambda d: print(f"[{marks[d['verdict']]}] {d['verdict']}: {d['detail']}"))
-    return EXIT_OK if verdict == "authenticated" else EXIT_FAILURE
+    code = _STATUS_EXIT[verdict]
+
+    def render(data: dict[str, str]) -> None:
+        line = f"[{_STATUS_MARKS[data['verdict']]}] {data['verdict']}: {data['detail']}"
+        # Anything other than a pass goes to stderr, like every other failure
+        # in this CLI. `auth status` was the one command printing its bad news
+        # on stdout, so `hexact auth status > /dev/null` hid the reason.
+        print(line, file=sys.stdout if code == EXIT_OK else sys.stderr)
+
+    emit({"verdict": verdict, "detail": detail}, args.json, render)
+    return code

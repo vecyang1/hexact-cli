@@ -26,7 +26,7 @@ import json
 from typing import Any
 
 from . import auth, hexomatic
-from .cli_common import _rows
+from .cli_common import _rows, reject_duration_for_a_date_flag
 from .config import HEXOMATIC, resolve_key
 from .output import EXIT_OK, emit
 
@@ -49,6 +49,11 @@ def _maybe_json(value: Any) -> Any:
 
 def cmd_credits(args: argparse.Namespace) -> int:
     """Automation credit consumption — the number REST does not expose."""
+    # This --since is a calendar date, unlike `watch changes --since`. Typing a
+    # duration here used to be handed to the gateway to interpret however it
+    # liked, which is not a question anybody measured the answer to.
+    reject_duration_for_a_date_flag(args.since)
+    reject_duration_for_a_date_flag(args.until)
     token = auth.access_token()
 
     if args.series:

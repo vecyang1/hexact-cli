@@ -29,6 +29,7 @@ import os
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -87,6 +88,19 @@ mutation { WatchOps { updateWatchProperty { error message } } }
 
 class LoginError(RuntimeError):
     """Login was refused, or returned no token."""
+
+
+class SessionError(LoginError):
+    """A *stored* session credential could not be exchanged.
+
+    Distinct from :class:`LoginError` because the top-level handler prefixes
+    the latter with "Login failed", and until 0.7.0 that sentence was printed
+    by thirteen commands where nobody had attempted a login -- `spark
+    contacts`, `meter overview`, `matic credits` and the rest all reach the
+    gateway through :func:`access_token`. A reader concluded their credentials
+    had just been rejected at a login they never performed. Subclasses
+    ``LoginError`` so any existing ``except`` keeps working.
+    """
 
 
 # An access token from this gateway is minted with a one-hour life; the refresh
@@ -156,35 +170,70 @@ def describe_credential(token: str) -> str:
 
 
 def _token_from_response(
-    data: dict[str, Any], field: str, *, field_name: str = "token"
+    data: dict[str, Any],
+    field: str,
+    *,
+    field_name: str = "token",
+    remedy: str,
+    error_type: type[LoginError] = LoginError,
 ) -> str:
+    """Pull one token out of a ``UserOps`` envelope, or raise with a true remedy.
+
+    ``remedy`` is required rather than defaulted because the two callers are in
+    genuinely different situations and the shared wording used to describe only
+    one of them. Until 0.7.0 both printed *"Most likely cause: the stored value
+    is an access token"* -- which on the login path names a stored value that
+    does not exist yet (the user has just typed a password), and prescribes as
+    the fix the exact command that produced the error.
+    """
     result = (data.get("UserOps") or {}).get(field)
     if not isinstance(result, dict):
-        raise LoginError(
+        raise error_type(
             f"UserOps.{field} returned no object. The gateway's schema may have "
             "changed; re-derive it from the dashboard bundle."
         )
     if result.get("error"):
-        raise LoginError(str(result.get("message") or "login refused"))
+        raise error_type(str(result.get("message") or "login refused"))
     token = result.get(field_name)
     if not token:
-        # Carry the remedy, not just the diagnosis. This exact error was hit
-        # with a *valid* credential stored in the wrong field, and the old
-        # message sent the reader looking for an expired token instead.
-        raise LoginError(
+        raise error_type(
             f"UserOps.{field} reported success but returned no {field_name!r}. "
             "Treating that as a failure rather than continuing with an empty "
-            "credential.\n"
-            "  Most likely cause: the stored value is an access token, not a "
-            "refresh token. They are different fields on UserLoginResponse and "
-            "only the refresh token can be exchanged.\n"
-            "  Fix: re-run `hexact auth login --email <you>`. This build classifies "
-            "credential before it hands it back and exchanges it once before "
-            "storing, so it cannot persist this shape again. Or set "
-            "HEXOWATCH_ACCESS_TOKEN to use an access token directly for the "
-            "next hour."
+            f"credential.\n{remedy}"
         )
     return str(token)
+
+
+def _exchange_failure_remedy(refresh: str) -> str:
+    """Explain a failed exchange from what the credential in hand actually is.
+
+    The wrong-field diagnosis is real and cost a day, so it is worth naming --
+    but only when the evidence supports it. Asserting it unconditionally
+    produced output that contradicted itself two lines later: *"Most likely
+    cause: the stored value is an access token"* directly above *"What is
+    stored: an opaque token (not a JWT)"*, since :func:`classify_credential`
+    can only ever return ``access`` for a readable JWT. A revoked or expired
+    token is far commoner, and sending that reader to look for the wrong field
+    wastes the one message they will read.
+    """
+    common = (
+        "  Fix: re-run `hexact auth login --email <you>`. Or set "
+        "HEXOWATCH_ACCESS_TOKEN to use an access token directly for the next "
+        "hour."
+    )
+    if classify_credential(refresh)["kind"] == "access":
+        return (
+            "  Cause: the stored value is an access token, not a refresh token "
+            f"({describe_credential(refresh)}). They are different fields on "
+            "UserLoginResponse and only the refresh token can be exchanged.\n"
+            + common
+        )
+    return (
+        "  Cause: the gateway refused the stored refresh token. The commonest "
+        "reasons are that it was revoked, that the account's password changed, "
+        f"or that it simply expired -- it is {describe_credential(refresh)}.\n"
+        + common
+    )
 
 
 def login(email: str, password: str) -> str:
@@ -198,7 +247,19 @@ def login(email: str, password: str) -> str:
     and it stops working an hour later with no way to renew it.
     """
     data = graphql.execute(_REFRESH_MUTATION, {"email": email, "password": password})
-    token = _token_from_response(data, "authRefreshToken", field_name="refresh_token")
+    token = _token_from_response(
+        data, "authRefreshToken", field_name="refresh_token",
+        # Nothing is stored yet -- the password was typed seconds ago -- so the
+        # remedy must not describe a stored credential, and must not be "run
+        # the command you just ran".
+        remedy=(
+            "  Cause: the gateway accepted the request but did not return the "
+            "field this client reads. That is a change in UserLoginResponse, "
+            "not something wrong with your account.\n"
+            "  Fix: re-derive the login mutation from the dashboard bundle "
+            "before trusting this path again. Nothing was stored."
+        ),
+    )
 
     # Selecting the right field is not proof that the right value arrived. Check
     # what is actually in hand before any caller can persist it -- the failure
@@ -251,7 +312,26 @@ def access_token(refresh_token: str | None = None) -> str:
 
     refresh = refresh_token or resolve_key(HEXOWATCH_SESSION)
     data = graphql.execute(_ACCESS_MUTATION, {"refreshToken": refresh})
-    return _token_from_response(data, "authAccessToken")
+    return _token_from_response(
+        data, "authAccessToken",
+        remedy=_exchange_failure_remedy(refresh),
+        error_type=SessionError,
+    )
+
+
+def _terminal_available() -> bool:
+    """Whether a password can be read without it being echoed somewhere.
+
+    Mirrors what :mod:`getpass` itself tries: the controlling terminal first,
+    then stdin. Asking ``sys.stdin.isatty()`` alone would be wrong in both
+    directions -- ``hexact auth login --email you < notes.txt`` typed at a real
+    terminal still has a perfectly good ``/dev/tty`` to prompt on.
+    """
+    try:
+        with open("/dev/tty"):
+            return True
+    except OSError:
+        return sys.stdin.isatty()
 
 
 def prompt_password(prompt: str = "Hexowatch password: ") -> str:
@@ -259,8 +339,72 @@ def prompt_password(prompt: str = "Hexowatch password: ") -> str:
 
     Deliberately not accepted as a command-line argument: argv is visible to
     every process on the machine and lands in shell history.
+
+    Refuses outright when no terminal can be reached, because :mod:`getpass`
+    answers that case by falling back to a *plain, echoing* read of stdin. It
+    says so -- "Warning: Password input may be echoed." -- and carries on, which
+    in a CI job, a pipeline or an agent tool call writes the account password
+    into whatever is capturing that stream. Measured 2026-08-14 on the shipped
+    0.6.0 binary: the fallback then raised ``EOFError`` on the empty pipe, so
+    the run ended at the top-level handler for *unforeseen* exceptions as
+    "Unexpected EOFError:" -- no diagnosis, no remedy, for a condition that is
+    entirely foreseeable. Refuse by name instead, and offer the routes that
+    exist.
     """
-    return getpass.getpass(prompt)
+    if not _terminal_available():
+        raise LoginError(
+            "No terminal is available to type a password into, so nothing was "
+            "sent. Reading it from a pipe is refused rather than done quietly: "
+            "without a terminal the password would be echoed into this "
+            "command's own output.\n"
+            "  Interactive: run this from a real terminal.\n"
+            "  Automation:  hexact auth login --email <you> --password-stdin\n"
+            "               (reads one line from stdin; never touches argv)\n"
+            "  Already hold a token: export HEXOWATCH_REFRESH_TOKEN=... or "
+            "HEXOWATCH_REFRESH_OP_REF='op://Vault/Item/field'"
+        )
+    try:
+        return getpass.getpass(prompt)
+    except EOFError as exc:
+        raise LoginError(
+            "The password prompt was closed before anything was typed; "
+            "nothing was sent."
+        ) from exc
+    except KeyboardInterrupt as exc:
+        raise LoginError("Cancelled at the password prompt; nothing was sent.") from exc
+
+
+def read_password_from_stdin() -> str:
+    """Read exactly one line of password from stdin, for automation.
+
+    The conventional shape (``docker login``, ``gh auth login``): the caller
+    pipes the secret in, so it never appears in argv or in shell history. Kept
+    separate from :func:`prompt_password` on purpose -- one is a terminal read
+    and the other is a pipe read, and conflating them is precisely how the
+    echoing fallback got in.
+
+    Only the line terminator is stripped. ``.strip()`` would silently mangle a
+    password that legitimately ends in a space, and the failure would look like
+    a wrong password rather than like a bug here.
+
+    Refuses when stdin *is* a terminal, which is the mirror of the bug this
+    function was added for: with no pipe attached, ``readline`` would sit there
+    echoing every character the user types.
+    """
+    if sys.stdin.isatty():
+        raise LoginError(
+            "--password-stdin expects a pipe, but stdin is a terminal -- you "
+            "would be typing the password in the clear. Nothing was sent. Drop "
+            "the flag to get a hidden prompt instead."
+        )
+    line = sys.stdin.readline()
+    if not line.rstrip("\r\n"):
+        raise LoginError(
+            "--password-stdin was given but stdin carried no password; "
+            "nothing was sent. Pipe it in, e.g. "
+            "`... | hexact auth login --email <you> --password-stdin`."
+        )
+    return line.rstrip("\r\n")
 
 
 def store_refresh_token(token: str) -> Path:

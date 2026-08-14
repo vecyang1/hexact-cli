@@ -19,6 +19,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import unittest
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -39,8 +40,8 @@ for _name in _MANAGED_VARS:
     os.environ.pop(_name, None)
 
 from hexact import (  # noqa: E402
-    auth, cli, cli_hexomatic, cli_hexowatch, cli_watch_rest, config, graphql,
-    hexomatic, hexometer, hexospark, hexowatch,
+    auth, cli, cli_auth, cli_hexomatic, cli_hexowatch, cli_watch_rest, config,
+    graphql, hexomatic, hexometer, hexospark, hexowatch,
 )
 # Imported from the module that owns each one rather than through `cli`, which
 # only re-exports them for the parser. A test that reaches an implementation
@@ -48,6 +49,7 @@ from hexact import (  # noqa: E402
 from hexact.cli import main  # noqa: E402
 from hexact.cli_common import (  # noqa: E402
     _is_paused, _parse_timestamp, _rows, _state_label, parse_since,
+    reject_duration_for_a_date_flag,
 )
 from hexact.cli_watch_rest import _normalise_address, resolve_tool_from_payload  # noqa: E402
 from hexact.http import HexactAPIError, redact, request  # noqa: E402
@@ -1264,8 +1266,13 @@ class TestLoginRefusesAnUnrenewableCredential(unittest.TestCase):
             # The gateway's house style for "no": success envelope, null token.
             return {"UserOps": {"authAccessToken": {"error": False, "token": None}}}
 
-        args = argparse.Namespace(email="a@b.com", store="file", json=False,
-                                  op_item="T", op_vault="V")
+        # Built through the real parser rather than by hand. A hand-rolled
+        # Namespace stops matching the command it stands in for the moment a
+        # flag is added, and the test then dies on an AttributeError that has
+        # nothing to do with the property it was written to check.
+        args = cli.build_parser().parse_args(
+            ["auth", "login", "--email", "a@b.com", "--store", "file",
+             "--op-item", "T", "--op-vault", "V"])
         with mock.patch.object(auth, "prompt_password", return_value="pw"), \
                 mock.patch.object(graphql, "execute", side_effect=fake_execute), \
                 mock.patch.object(auth, "store_refresh_token") as store_file, \
@@ -1859,3 +1866,526 @@ class TestEveryRemedyIsACommandThatRuns(unittest.TestCase):
             offenders, [],
             "these lines tell the user to run a command that will refuse",
         )
+
+
+def _command_tree(parser, prefix=()):
+    """Map every reachable subcommand path to the flags it accepts."""
+    tree = {prefix: {opt for action in parser._actions for opt in action.option_strings}}
+    for action in parser._actions:
+        choices = getattr(action, "choices", None)
+        if not isinstance(choices, dict):
+            continue
+        for name, sub in choices.items():
+            if isinstance(sub, argparse.ArgumentParser):
+                tree.update(_command_tree(sub, prefix + (name,)))
+    return tree
+
+
+class TestEveryCommandThisCLIPrintsCanActuallyRun(unittest.TestCase):
+    """The generalisation of the `auth login --email` check, one rung up.
+
+    That test asked a narrow question -- does every mention of `hexact auth
+    login` carry `--email` -- and the answer stayed yes while a *different*
+    printed command rotted: `hexact watch tags list` ended its output with
+    "Filter monitors by one:  hexact watch monitors --tag <id>", and `watch
+    monitors` is the REST listing, which takes no options at all. Copying it
+    got `unrecognized arguments: --tag`. The narrow test could not see it
+    because it was only ever looking at one command.
+
+    So the predicate is widened to every command string the source prints:
+    the subcommand path must exist, and every flag named must belong to it.
+    Values are deliberately not checked -- `<id>` is a placeholder, and
+    inventing a type for it would make this test about the test.
+    """
+
+    # `hexact` followed by words, then any --flags. Stops at a placeholder, a
+    # quote or end of line, which is where prose resumes.
+    _MENTION = re.compile(r"hexact ((?:[a-z_]+)(?: [a-z_]+)*(?: --[a-z-]+)*)")
+
+    def _mentions(self):
+        root = Path(__file__).resolve().parent.parent
+        for path in sorted(root.glob("hexact/*.py")):
+            text = path.read_text(encoding="utf-8")
+            for number, line in enumerate(text.splitlines(), start=1):
+                for found in self._MENTION.finditer(line):
+                    yield f"{path.name}:{number}", found.group(1).split()
+
+    def test_the_extractor_finds_the_commands_it_is_supposed_to_grade(self):
+        """A regex that matched nothing would make this suite pass vacuously."""
+        found = list(self._mentions())
+        self.assertGreaterEqual(
+            len(found), 8,
+            "the mention regex stopped matching; this test is now checking nothing",
+        )
+
+    def test_every_printed_command_path_exists_and_accepts_its_flags(self):
+        tree = _command_tree(cli.build_parser())
+        offenders = []
+        for where, words in self._mentions():
+            path, flags = [], []
+            for word in words:
+                (flags if word.startswith("--") else path).append(word)
+            # Longest prefix of `path` that is a real command; trailing words
+            # are prose that ran on ("hexact watch channels to list them").
+            best = ()
+            for length in range(len(path), -1, -1):
+                if tuple(path[:length]) in tree:
+                    best = tuple(path[:length])
+                    break
+            if not best and path:
+                offenders.append(f"{where}: `hexact {' '.join(words)}` -- no such command")
+                continue
+            unknown = [f for f in flags if f not in tree[best]]
+            if unknown:
+                offenders.append(
+                    f"{where}: `hexact {' '.join(words)}` -- "
+                    f"`hexact {' '.join(best)}` does not accept {', '.join(unknown)}")
+        self.assertEqual(offenders, [], "\n".join([""] + offenders))
+
+
+class TestAMessageOnlyClaimsWhatItsCallerCanSupport(unittest.TestCase):
+    """Four shared strings that asserted one caller's situation for all of them.
+
+    The project already fixed this once, in the session-token error. Running
+    the installed 0.6.0 binary across all 27 read-only commands found four
+    more, which is the argument for a test rather than another careful read.
+    """
+
+    def test_a_failed_exchange_does_not_invent_the_wrong_field_diagnosis(self):
+        """The old text said "the stored value is an access token" directly
+        above its own line saying the value is opaque and not a JWT."""
+        remedy = auth._exchange_failure_remedy("not-a-jwt-at-all")
+        self.assertNotIn("is an access token", remedy)
+        self.assertIn("revoked", remedy)
+
+    def test_but_it_still_says_so_when_the_evidence_is_there(self):
+        """The wrong-field diagnosis is real and cost a day. Keep it for the
+        case that actually shows it."""
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"iat": 1_700_000_000, "exp": 1_700_003_600}).encode()
+        ).decode().rstrip("=")
+        access = f"eyJhbGciOiJIUzI1NiJ9.{payload}.sig"
+        self.assertEqual(auth.classify_credential(access)["kind"], "access")
+        self.assertIn("is an access token", auth._exchange_failure_remedy(access))
+
+    def test_a_stored_token_failing_is_not_reported_as_a_failed_login(self):
+        """Thirteen commands reach the gateway without anyone logging in."""
+        self.assertTrue(issubclass(auth.SessionError, auth.LoginError))
+        err = io.StringIO()
+        with mock.patch.object(hexospark, "crm_contacts",
+                               side_effect=auth.SessionError("token rejected")):
+            with mock.patch.object(auth, "access_token", return_value="t"):
+                with contextlib.redirect_stderr(err):
+                    code = main(["spark", "contacts"])
+        self.assertEqual(code, 1)
+        self.assertIn("Session error", err.getvalue())
+        self.assertNotIn("Login failed", err.getvalue())
+
+    def test_the_hexometer_key_pointer_names_the_page_that_has_it(self):
+        """Hexometer's key is per-property; the shared sentence sent people to
+        account settings, which `hexact/hexometer.py` already said was wrong."""
+        with self.assertRaises(config.CredentialError) as raised:
+            config.resolve_key(config.HEXOMETER)
+        message = str(raised.exception)
+        self.assertIn("PROPERTY", message)
+        self.assertIn("Hexometer", message)   # the product, not the internal id
+        self.assertNotIn("API/Webhook", message)
+
+    def test_a_null_gateway_field_admits_it_might_be_access_not_auth(self):
+        """`unwrap` is shared by every read across four products, so "your
+        token is bad" also greets someone who simply does not own Hexospark."""
+        with self.assertRaises(graphql.AuthError) as raised:
+            graphql.unwrap({"HexosparkContactOps": None}, "HexosparkContactOps", "x")
+        self.assertIn("no access", str(raised.exception))
+
+    def test_the_session_error_lists_every_route_the_resolver_reads(self):
+        with self.assertRaises(config.CredentialError) as raised:
+            config.resolve_key(config.HEXOWATCH_SESSION)
+        message = str(raised.exception)
+        for route in ("hexact auth login", "HEXOWATCH_REFRESH_OP_REF",
+                      "HEXOWATCH_REFRESH_TOKEN", "credentials.env"):
+            self.assertIn(route, message)
+
+
+class TestUsageIsCheckedBeforeCredentialsAreSpent(unittest.TestCase):
+    """Refuse a usage mistake before resolving anything, everywhere.
+
+    `watch delete`, `watch alerts delete` and `watch tags set` already did.
+    `watch unmute` and `watch changes` did not, so a missing flag or a typo
+    surfaced as a credential error about something else -- and against a
+    working credential, `unmute` paid a round trip to say no.
+    """
+
+    _TRAP = "credentials must not be resolved before the usage check"
+
+    def test_unmute_without_a_channel_refuses_before_minting_a_token(self):
+        args = cli.build_parser().parse_args(["watch", "unmute", "12"])
+        with mock.patch.object(auth, "access_token",
+                               side_effect=AssertionError(self._TRAP)):
+            with self.assertRaises(ValueError) as raised:
+                cli_hexowatch.cmd_watch_mute(args)
+        self.assertIn("--channel", str(raised.exception))
+
+    def test_a_bad_since_is_reported_as_a_bad_since_not_a_missing_key(self):
+        args = cli.build_parser().parse_args(["watch", "changes", "--since", "notatime"])
+        with mock.patch.object(cli_watch_rest, "resolve_key",
+                               side_effect=AssertionError(self._TRAP)):
+            with self.assertRaises(ValueError) as raised:
+                cli_watch_rest.cmd_changes(args)
+        self.assertIn("Invalid duration", str(raised.exception))
+
+    def test_that_typo_exits_2_rather_than_reading_as_an_api_failure(self):
+        """`argparse.ArgumentTypeError` inherits from Exception, not
+        ValueError, so it fell past the usage branch into the last-resort
+        handler: `Unexpected ArgumentTypeError`, exit 1."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main(["watch", "changes", "--since", "notatime"])
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertIn("Usage error", err.getvalue())
+        self.assertNotIn("Unexpected", err.getvalue())
+
+
+class TestTheTwoSinceFlagsCannotBeSilentlyConfused(unittest.TestCase):
+    """`m` is months, and `30m` returned a 900-day window with no complaint.
+
+    The old error text read "Use forms like 24h, 7d, 2w, 1m" -- `m` in a list
+    that opens with hours, where it reads as minutes. Nothing errored; the
+    caller just summarised the wrong period.
+    """
+
+    def test_m_is_months_and_the_help_says_so_in_the_same_breath(self):
+        now = datetime.now(timezone.utc)
+        self.assertGreater((now - parse_since("3m")).days, 85)
+        with self.assertRaises(ValueError) as raised:
+            parse_since("bogus")
+        message = str(raised.exception)
+        self.assertIn("MONTHS", message)
+        self.assertIn("Minutes are not supported", message)
+
+    def test_the_date_flags_refuse_a_duration_rather_than_guessing(self):
+        with self.assertRaises(ValueError) as raised:
+            reject_duration_for_a_date_flag("7d")
+        self.assertIn("watch changes", str(raised.exception))
+
+    def test_but_a_date_passes_straight_through_unvalidated(self):
+        """The gateway's accepted formats were never measured, so refusing
+        something it would have taken is the worse error."""
+        self.assertEqual(reject_duration_for_a_date_flag("2026-08-01"), "2026-08-01")
+        self.assertIsNone(reject_duration_for_a_date_flag(None))
+
+
+class TestAuthStatusSeparatesNoAnswerFromABadAnswer(unittest.TestCase):
+    """Four verdicts, three exit codes -- and failures on stderr like everything
+    else in this CLI.
+
+    `auth.status()` goes to trouble to keep "the gateway never answered" apart
+    from "the gateway refused", and the exit code threw it away by returning 1
+    for both. A network outage was then indistinguishable from a dead
+    credential to anything scripting it, which is how a working token gets
+    rotated during an outage.
+    """
+
+    def _status(self, verdict):
+        args = cli.build_parser().parse_args(["auth", "status"])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(auth, "status", return_value=(verdict, "detail")):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli_auth.cmd_auth_status(args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_each_verdict_gets_its_own_exit_code(self):
+        self.assertEqual(self._status("authenticated")[0], 0)
+        self.assertEqual(self._status("rejected")[0], 1)
+        self.assertEqual(self._status("missing")[0], 2)
+        self.assertEqual(self._status("unknown")[0], 2)
+
+    def test_only_the_pass_goes_to_stdout(self):
+        code, out, err = self._status("authenticated")
+        self.assertIn("authenticated", out)
+        self.assertEqual(err, "")
+        for bad in ("rejected", "missing", "unknown"):
+            code, out, err = self._status(bad)
+            self.assertIn(bad, err, f"{bad} should report on stderr")
+            self.assertEqual(out, "", f"{bad} should not report on stdout")
+
+    def test_doctor_looks_at_the_gateway_too(self):
+        """Three REST keys printed [OK] [OK] [OK] and exited 0 while every
+        GraphQL command failed on a credential nothing had examined."""
+        args = cli.build_parser().parse_args(["doctor"])
+        out = io.StringIO()
+        with TemporaryDirectory() as home:
+            with mock.patch.dict(os.environ, {"HEXACT_HOME": home,
+                                              "HEXOWATCH_API_KEY": "k" * 64}):
+                with mock.patch.object(hexowatch, "list_monitored_urls", return_value=[]):
+                    with mock.patch.object(auth, "status",
+                                           return_value=("rejected", "token refused")):
+                        with contextlib.redirect_stdout(out):
+                            code = cli.cmd_doctor(args)
+        self.assertIn("gateway", out.getvalue())
+        self.assertEqual(code, 1, out.getvalue())
+
+
+class TestDoctorDoesNotPassAfterCheckingNothing(unittest.TestCase):
+    """The quickstart's own front door was a green light over an empty set.
+
+    `README.md` put `hexact doctor` in the Install block, twenty-two lines above
+    the credentials table, so the first two commands a new user ran were
+    `pipx install` and a `doctor` that had nothing to examine. It printed three
+    `[SKIP]` lines and exited 0 -- indistinguishable, to a reader and to a
+    script, from three products authenticating.
+
+    Same shape as `tools/validate_documents.py` before it grew an exit 2, and
+    same rule: a run that reached no verdict must not be phrased as a pass.
+    """
+
+    def _run(self, env: dict[str, str]):
+        args = cli.build_parser().parse_args(["doctor"])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.cmd_doctor(args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_no_credentials_anywhere_is_exit_2_not_exit_0(self):
+        with TemporaryDirectory() as home:  # no credentials.env inside it
+            code, out, err = self._run({"HEXACT_HOME": home})
+        self.assertEqual(code, 2, f"stdout={out!r} stderr={err!r}")
+        self.assertIn("SKIP", out)
+        self.assertIn("No verdict", err)
+        self.assertIn("not a pass", err)
+
+    def test_one_product_authenticating_is_still_exit_0(self):
+        """The refusal must not swallow the case it exists to protect."""
+        with TemporaryDirectory() as home:
+            with mock.patch.object(hexowatch, "list_monitored_urls", return_value=[]):
+                code, out, err = self._run(
+                    {"HEXACT_HOME": home, "HEXOWATCH_API_KEY": "k" * 64})
+        self.assertEqual(code, 0, f"stdout={out!r} stderr={err!r}")
+        self.assertIn("OK", out)
+        self.assertNotIn("No verdict", err)
+
+    def test_a_rejected_credential_is_exit_1_and_says_nothing_about_verdicts(self):
+        """`1` is a finding; `2` is the absence of one. Never collapse them."""
+        with TemporaryDirectory() as home:
+            with mock.patch.object(
+                hexowatch, "list_monitored_urls",
+                side_effect=HexactAPIError("invalid api key"),
+            ):
+                code, out, err = self._run(
+                    {"HEXACT_HOME": home, "HEXOWATCH_API_KEY": "k" * 64})
+        self.assertEqual(code, 1, f"stdout={out!r} stderr={err!r}")
+        self.assertIn("FAIL", out)
+        self.assertNotIn("No verdict", err)
+
+
+class TestAPasswordPromptWithNoTerminalIsRefused(unittest.TestCase):
+    """`getpass` answers "no terminal" by echoing the password instead.
+
+    Measured 2026-08-14 against the installed 0.6.0 binary, running the exact
+    remedy string the CLI prints::
+
+        $ hexact auth login --email x@example.com < /dev/null
+        GetPassWarning: Can not control echo on the terminal.
+        Warning: Password input may be echoed.
+        Hexowatch password: Unexpected EOFError:
+
+    Two defects in three lines. `getpass.getpass` cannot open ``/dev/tty`` in a
+    pipeline, a CI job or an agent tool call, so it falls back to a **plain,
+    echoing read of stdin** -- which writes the account password into whatever
+    log is capturing that stream. It then raises ``EOFError`` on the empty pipe,
+    and the run ends through the top-level last-line-of-defence handler, whose
+    whole purpose is unforeseen types. A foreseeable condition arriving there
+    reads as ``Unexpected EOFError:`` with no diagnosis and no remedy.
+
+    The safety net was working. What was missing is that this case is not
+    unexpected at all, and the right answer is to refuse before prompting.
+    """
+
+    def test_prompt_password_never_reaches_getpass_without_a_terminal(self):
+        """Assert the absence with a trap, not with a return value.
+
+        A stub returning a plausible password would hide the very thing under
+        test: that `getpass` is not entered at all. Exploding on the call turns
+        the ordering bug into a failure at the moment it happens.
+        """
+        with mock.patch.object(auth, "_terminal_available", return_value=False):
+            with mock.patch.object(
+                auth.getpass, "getpass",
+                side_effect=AssertionError(
+                    "getpass must not run when there is no terminal: its "
+                    "fallback echoes the password"),
+            ):
+                with self.assertRaises(auth.LoginError) as raised:
+                    auth.prompt_password()
+        message = str(raised.exception)
+        self.assertIn("nothing was sent", message)
+        self.assertIn("--password-stdin", message)
+
+    def test_the_refusal_names_only_routes_that_exist(self):
+        """A remedy naming a variable nobody reads is the defect one rung down
+        from a remedy naming a command that cannot run."""
+        with mock.patch.object(auth, "_terminal_available", return_value=False):
+            with self.assertRaises(auth.LoginError) as raised:
+                auth.prompt_password()
+        message = str(raised.exception)
+        readable = set(config._ENV_VARS.values()) | set(config._OP_REF_VARS.values())
+        for name in ("HEXOWATCH_REFRESH_TOKEN", "HEXOWATCH_REFRESH_OP_REF"):
+            self.assertIn(name, message)
+            self.assertIn(
+                name, readable,
+                f"{name} is advertised in the refusal but the resolver never reads it",
+            )
+
+    def test_a_terminal_still_gets_the_normal_prompt(self):
+        """The refusal must not swallow the case it exists to protect."""
+        with mock.patch.object(auth, "_terminal_available", return_value=True):
+            with mock.patch.object(
+                auth.getpass, "getpass", return_value="typed-at-a-tty"
+            ) as prompt:
+                self.assertEqual(auth.prompt_password(), "typed-at-a-tty")
+        self.assertEqual(prompt.call_count, 1)
+
+    def test_password_stdin_reads_one_line_and_keeps_trailing_spaces(self):
+        """`.strip()` here would silently mangle a legitimate password."""
+        with mock.patch.object(auth.sys, "stdin", io.StringIO("s3cret \n")):
+            self.assertEqual(auth.read_password_from_stdin(), "s3cret ")
+
+    def test_password_stdin_refuses_a_terminal_rather_than_echoing_it(self):
+        """The mirror of the bug above: no pipe attached means `readline` sits
+        there echoing every character typed."""
+        tty = io.StringIO("s3cret\n")
+        tty.isatty = lambda: True  # type: ignore[method-assign]
+        with mock.patch.object(auth.sys, "stdin", tty):
+            with self.assertRaises(auth.LoginError) as raised:
+                auth.read_password_from_stdin()
+        self.assertIn("nothing was sent", str(raised.exception).lower())
+
+    def test_password_stdin_refuses_an_empty_pipe_instead_of_sending_blank(self):
+        with mock.patch.object(auth.sys, "stdin", io.StringIO("")):
+            with self.assertRaises(auth.LoginError) as raised:
+                auth.read_password_from_stdin()
+        self.assertIn("nothing was sent", str(raised.exception))
+
+    def test_the_real_entry_point_refuses_a_pipe_without_echoing(self):
+        """The unit tests above patch the detector; this one does not.
+
+        Every mock in this class agrees to hide the thing that actually broke --
+        a real process with no controlling terminal. One pass through the real
+        entry point, with stdin genuinely closed, is what saw it.
+        """
+        env = {k: v for k, v in os.environ.items() if k not in _MANAGED_VARS}
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
+        completed = subprocess.run(
+            [sys.executable, "-m", "hexact", "auth", "login",
+             "--email", "nobody@example.invalid"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            env=env, cwd="/", timeout=60,
+        )
+        combined = completed.stdout + completed.stderr
+        self.assertEqual(completed.returncode, 1, combined)
+        self.assertNotIn("may be echoed", combined)
+        self.assertNotIn("EOFError", combined)
+        self.assertNotIn("Traceback", combined)
+        self.assertIn("--password-stdin", combined)
+
+
+class TestUnauthenticatedReadIsNotAnEmptyAccount(unittest.TestCase):
+    """Three commands reported an expired session as an account with nothing in it.
+
+    Measured 2026-08-14 with a deliberately invalid token, against an account
+    that REST simultaneously reported as 48 monitors and 3 notification
+    channels. The gateway is honest -- every member of the container comes back
+    ``null``. The empty answer was manufactured locally, by an ``or []`` in each
+    renderer: the idiom this project's style rules reserve for optional addends
+    whose default is genuinely the neutral element, used here on values a reader
+    takes as fact.
+
+    ``unwrap`` cannot catch this. It guards the two levels GraphQL wraps every
+    answer in, and both of those are non-null; the nulls are one level further
+    down, inside the payload.
+    """
+
+    # Verbatim from the probe against the live gateway. Do not "tidy" these
+    # into empty lists -- an empty list is the shape the bug produced, not the
+    # shape the server sends.
+    LIST = {"data": {"Watch": {"getUserWatchProperties": {
+        "totalCount": None, "watchProperties": None}}}}
+    CHANNELS = {"data": {"WatchIntegration": {"getUserIntegrations": {
+        "integrations": None}}}}
+    SETTINGS = {"data": {"UserWatchSettings": {"get": {
+        "emails": None, "webhooks": None}}}}
+
+    # The same reads on an account that genuinely has nothing. These must keep
+    # working: a guard that cannot tell "unreadable" from "empty" has only moved
+    # the lie, not removed it.
+    EMPTY_LIST = {"data": {"Watch": {"getUserWatchProperties": {
+        "totalCount": 0, "watchProperties": []}}}}
+    EMPTY_CHANNELS = {"data": {"WatchIntegration": {"getUserIntegrations": {
+        "integrations": []}}}}
+    EMPTY_SETTINGS = {"data": {"UserWatchSettings": {"get": {
+        "emails": [], "webhooks": []}}}}
+
+    def _run(self, argv, payload):
+        out, err = io.StringIO(), io.StringIO()
+        # Patched on the module that defines it, so the patch survives the
+        # command moving between cli_* modules.
+        with mock.patch.object(auth, "access_token", return_value="live-looking"):
+            with _respond_with(payload):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_watch_list_refuses_instead_of_reporting_zero_monitors(self):
+        code, out, err = self._run(["watch", "list"], self.LIST)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertNotIn("0 of", out)
+        self.assertNotIn("monitor(s)", out)
+        self.assertIn("empty", (out + err).lower())
+
+    def test_watch_channels_refuses_instead_of_reporting_no_channels(self):
+        code, out, err = self._run(["watch", "channels"], self.CHANNELS)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertNotIn("No notification channels registered", out)
+
+    def test_watch_settings_refuses_instead_of_reporting_zero_recipients(self):
+        code, out, err = self._run(["watch", "settings"], self.SETTINGS)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertNotIn("(0)", out)
+
+    def test_json_output_carries_no_fabricated_empty_collection(self):
+        """``--json`` is what a script reads, and it lied in the same way.
+
+        The renderer was not the only place the empty list was invented: the
+        payload handed to ``emit`` carried it too, so a consumer piping
+        ``--json`` saw ``"watchProperties": []`` for an account with 48.
+        """
+        code, out, _ = self._run(["--json", "watch", "list"], self.LIST)
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("[]", out)
+
+    def test_a_genuinely_empty_account_still_renders(self):
+        for argv, payload in (
+            (["watch", "list"], self.EMPTY_LIST),
+            (["watch", "channels"], self.EMPTY_CHANNELS),
+            (["watch", "settings"], self.EMPTY_SETTINGS),
+        ):
+            with self.subTest(argv=argv):
+                code, out, err = self._run(argv, payload)
+                self.assertEqual(code, 0, out + err)
+
+    def test_a_partially_null_payload_reports_that_part_as_unreadable(self):
+        """Not every null is an auth failure, and not every null is a zero.
+
+        A container with one real member is a live read, so it must not be
+        refused -- but the member that came back null still has no count, and
+        printing ``0`` for it would be the original bug at a smaller scale.
+        """
+        payload = {"data": {"UserWatchSettings": {"get": {
+            "emails": [{"email": "a@b.test", "enabled": True, "verified": True}],
+            "webhooks": None}}}}
+        code, out, err = self._run(["watch", "settings"], payload)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("a@b.test", out)
+        self.assertNotIn("Account webhooks (0)", out)
+        self.assertIn("unreadable", out.lower())

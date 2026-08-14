@@ -64,6 +64,28 @@ _OP_REF_VARS = {
     HEXOWATCH_ACCESS: "HEXOWATCH_ACCESS_OP_REF",
 }
 
+# The product name a user recognises, rather than this module's internal id.
+_PRODUCT_NAMES = {
+    HEXOWATCH: "Hexowatch",
+    HEXOMATIC: "Hexomatic",
+    HEXOMETER: "Hexometer",
+    HEXOWATCH_SESSION: "the Hexact gateway",
+    HEXOWATCH_ACCESS: "the Hexact gateway",
+}
+
+# Where each key actually lives. Carried per service rather than templated into
+# one sentence, because the sentence was wrong for its third caller:
+# Hexometer's key is issued per *property*, and `hexact/hexometer.py`'s own
+# docstring said so while the shared error sent people to account settings.
+_KEY_LOCATIONS = {
+    HEXOWATCH: "The key is in the API/Webhook section of Hexowatch's settings.",
+    HEXOMATIC: "The key is in the API/Webhook section of Hexomatic's settings.",
+    HEXOMETER: ("Hexometer's key is issued per PROPERTY, not per account -- open "
+                "the property in the dashboard and look in its settings."),
+    HEXOWATCH_SESSION: "Run: hexact auth login --email <you>",
+    HEXOWATCH_ACCESS: "Run: hexact auth login --email <you>",
+}
+
 # `op read` blocks on a biometric prompt when it has to unlock interactively.
 # A short timeout turns "hung forever in a cron job" into a clear failure.
 _OP_TIMEOUT_SECONDS = 30
@@ -190,15 +212,23 @@ def resolve_key(service: str) -> str:
             "it needs the dashboard session credential instead. One session "
             "covers the whole suite; Hexowatch, Hexomatic, Hexometer and "
             "Hexospark share the same gateway.\n"
-            "  Run: hexact auth login --email <you>\n"
-            f"  Or set {_OP_REF_VARS[service]}='op://Vault/Item/field'"
+            # Every route, not two of them. This module's own docstring
+            # promises the errors list each configured source, and the API-key
+            # message directly below does; this one quietly dropped the
+            # environment variable and the credentials file, so a reader
+            # holding a token already had no supported way to use it.
+            "  1. hexact auth login --email <you>\n"
+            f"  2. export {_OP_REF_VARS[service]}='op://Vault/Item/field'\n"
+            f"  3. export {_ENV_VARS[service]}=...\n"
+            f"  4. echo '{_ENV_VARS[service]}=...' >> {credentials_path()} "
+            f"&& chmod 600 {credentials_path()}"
         )
 
     raise CredentialError(
-        f"No API key found for {service}. Set one of:\n"
+        f"No API key found for {_PRODUCT_NAMES[service]}. Set one of:\n"
         f"  1. export {_ENV_VARS[service]}=...\n"
         f"  2. export {_OP_REF_VARS[service]}='op://Vault/Item/field'  (recommended)\n"
         f"  3. echo '{_ENV_VARS[service]}=...' >> {credentials_path()} "
         f"&& chmod 600 {credentials_path()}\n"
-        f"Keys come from the API/Webhook section of the {service} dashboard settings."
+        f"{_KEY_LOCATIONS[service]}"
     )

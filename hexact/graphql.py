@@ -204,19 +204,29 @@ def unwrap(data: dict[str, Any], namespace: str, field: str) -> Any:
     alone, this fails closed. A genuinely empty collection is returned by the
     gateway as ``[]``, not ``null``, so nothing legitimate is lost.
     """
+    # Both messages name every cause that reaches them, not the commonest one.
+    # This function is shared by every gateway read across four products, so a
+    # sentence asserting "your token is bad" also greets someone with a working
+    # token who simply does not own Hexospark -- and sends them to re-
+    # authenticate a credential that was never the problem.
     scope = data.get(namespace)
     if scope is None:
         raise AuthError(
-            f"The GraphQL gateway returned null for {namespace}. This means the "
-            "session token was missing, expired or rejected -- it does not mean "
-            "the account is empty. Run: hexact auth login --email <you>"
+            f"The GraphQL gateway returned null for {namespace}. It does not "
+            "mean the account is empty -- this client refuses to render a null "
+            "as 'no data'. Either the session token is missing, expired or "
+            "rejected, or this account has no access to "
+            f"{namespace.replace('Ops', '')}.\n"
+            "  Check which: hexact auth status"
         )
     value = scope.get(field)
     if value is None:
         raise AuthError(
-            f"The GraphQL gateway returned null for {namespace}.{field}. This "
-            "means the session token was missing, expired or rejected -- it "
-            "does not mean there is no data. Run: hexact auth login --email <you>"
+            f"The GraphQL gateway returned null for {namespace}.{field}. It "
+            "does not mean there is no data. Either the session token is "
+            "missing, expired or rejected, or this account cannot read that "
+            "field.\n"
+            "  Check which: hexact auth status"
         )
     return value
 

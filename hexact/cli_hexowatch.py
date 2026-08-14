@@ -26,6 +26,7 @@ import sys
 from typing import Any
 
 from . import auth, graphql
+from .cli_common import reject_duration_for_a_date_flag
 from .http import HexactAPIError
 from .output import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, emit
 
@@ -45,7 +46,10 @@ def cmd_tags(args: argparse.Namespace) -> int:
         print(f"{len(rows)} tag(s):\n")
         for row in rows:
             print(f"  [{row.get('id')}] {str(row.get('name')):24} {row.get('color')}")
-        print("\nFilter monitors by one:  hexact watch monitors --tag <id>")
+        # `watch monitors` is the REST listing and takes no options at all;
+        # tags exist only on the gateway, so `watch list` is the one that
+        # filters. Printed for months as a command that exits 2.
+        print("\nFilter monitors by one:  hexact watch list --tag <id>")
 
     emit({"tags": tags}, args.json, render)
     return EXIT_OK
@@ -160,6 +164,8 @@ def cmd_noise(args: argparse.Namespace) -> int:
     counted client-side by pulling every change and grouping in Python. The
     server keeps the same figures per period.
     """
+    reject_duration_for_a_date_flag(args.since)
+    reject_duration_for_a_date_flag(args.until)
     token = auth.access_token()
     rows = graphql.notification_breakdown(token, since=args.since, until=args.until) or []
 
@@ -386,7 +392,10 @@ def cmd_watch_mute(args: argparse.Namespace) -> int:
     the previous set is not stored anywhere, and inventing one would be worse
     than asking.
     """
-    token = auth.access_token()
+    # Usage before credentials. `watch delete`, `watch alerts delete` and
+    # `watch tags set` all refuse first and this one did not, so forgetting
+    # --channel with nothing configured produced a credential error about the
+    # wrong thing -- and with a working credential, paid a round trip to say no.
     targets = [int(i) for i in args.ids]
     channel_ids = [] if args.mute else [int(i) for i in args.channels]
 
@@ -397,6 +406,7 @@ def cmd_watch_mute(args: argparse.Namespace) -> int:
             "notify, so it cannot be restored automatically."
         )
 
+    token = auth.access_token()
     results = []
     for monitoring_id in targets:
         entry: dict[str, Any] = {"id": monitoring_id}

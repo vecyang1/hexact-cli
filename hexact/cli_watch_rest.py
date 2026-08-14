@@ -53,8 +53,11 @@ def cmd_changes(args: argparse.Namespace) -> int:
     account-wide change feed, so cost grows with monitor count. ``--limit``
     caps the per-monitor page size, not the number of monitors visited.
     """
-    key = resolve_key(HEXOWATCH)
+    # Argument validation ahead of credential resolution. A first-time user who
+    # mistypes --since should be told about the typo, not sent to configure an
+    # API key they will then have to come back and use with the same bad value.
     cutoff = parse_since(args.since)
+    key = resolve_key(HEXOWATCH)
     monitors = _rows(hexowatch.list_monitored_urls(key), "monitored_urls", "data", "urls")
 
     collected: list[dict[str, Any]] = []

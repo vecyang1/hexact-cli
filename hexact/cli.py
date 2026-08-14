@@ -51,9 +51,20 @@ from .output import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, emit
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Prove each credential actually authenticates, without printing any key.
 
-    A product with no credential configured is reported as ``skipped``, not as
-    a failure -- these are three independent products and owning one does not
-    imply owning the others.
+    Covers four credentials: the three REST API keys and the gateway session
+    that every GraphQL command needs. A product with no credential configured
+    is reported as ``skipped``, not as a failure -- these are independent
+    products and owning one does not imply owning the others.
+
+    But *every* product skipped is a different answer again. Until 0.7.0 this
+    exited ``0`` after examining nothing, and the README's quickstart ran it
+    immediately after ``pipx install`` -- so the very first command a new user
+    ran printed three ``SKIP`` lines and a success, before any credential
+    existed. That is the project's own "check the denominator" rule failing in
+    its own front door: a run that verified zero things must never be phrased
+    as a pass. Three outcomes now, matching ``tools/validate_documents.py``:
+    ``0`` something authenticated, ``1`` something was refused, ``2`` nothing
+    was checked.
     """
     checks = (
         ("hexowatch", HEXOWATCH, lambda key: hexowatch.list_monitored_urls(key)),
@@ -79,12 +90,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         results[label] = {"ok": True, "stage": "authenticated",
                           "detail": f"key resolved and accepted ({len(key)} chars)"}
 
+    # The gateway is not a fourth product, it is the other half of this one.
+    # doctor probed three REST keys and stopped, so an account with all three
+    # configured printed [OK] [OK] [OK] and exited 0 while every GraphQL
+    # command -- `watch list`, `spark contacts`, `meter overview`, over half
+    # the read surface -- failed on a credential nothing had looked at.
+    verdict, detail = auth.status()
+    results["gateway"] = {
+        "ok": {"authenticated": True, "rejected": False}.get(verdict),
+        "stage": verdict,
+        "detail": detail.splitlines()[0] if detail else verdict,
+    }
+    if verdict == "rejected":
+        worst = EXIT_FAILURE
+
     def render(data: dict[str, Any]) -> None:
         marks = {True: "OK  ", False: "FAIL", None: "SKIP"}
         for label, outcome in data.items():
             print(f"[{marks[outcome['ok']]}] {label}: {outcome['detail']}")
 
     emit(results, args.json, render)
+
+    if worst == EXIT_OK and not any(o["ok"] for o in results.values()):
+        # stderr, so `--json` stays a clean pipe while a human still sees that
+        # the tick underneath means nothing.
+        print(
+            "\nNo verdict: no credential was configured for any product, so "
+            "nothing was verified.\nThis is not a pass. Set at least one key "
+            "and run again:\n"
+            "  export HEXOWATCH_API_KEY=...        # or HEXOMATIC_/HEXOMETER_\n"
+            "  export HEXOWATCH_OP_REF='op://Vault/Item/field'   # 1Password\n"
+            "Then: hexact doctor",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     return worst
 
 
@@ -122,7 +161,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     changes = watch_sub.add_parser("changes", help="recent detected changes")
-    changes.add_argument("--since", default="24h", help="lookback window (default 24h)")
+    changes.add_argument(
+        "--since", default="24h",
+        help="lookback duration: h/d/w/m where m is MONTHS (24h, 7d, 2w, 3m). "
+             "No minute form. Default 24h.")
     changes.add_argument("--limit", type=int, default=10,
                          help="log entries per monitor (default 10)")
     changes.add_argument("--min-percent", type=float, default=None,
@@ -266,7 +308,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     noise = watch_sub.add_parser(
         "noise", help="notification volume, counted by the server")
-    noise.add_argument("--since", metavar="DATE")
+    noise.add_argument(
+        "--since", metavar="DATE",
+        help="calendar date, sent to the gateway as-is (e.g. 2026-08-01). "
+             "Not a duration -- `watch changes --since` is the one that is.")
     noise.add_argument("--until", metavar="DATE")
     noise.set_defaults(func=cmd_noise)
 
@@ -300,6 +345,10 @@ def build_parser() -> argparse.ArgumentParser:
                             help="1Password vault (default 'Agent Automation')")
     auth_login.add_argument("--op-item", default="Hexowatch Session - refresh token",
                             help="1Password item title")
+    auth_login.add_argument(
+        "--password-stdin", action="store_true",
+        help="read the password from stdin instead of prompting, for runs with "
+             "no terminal; keeps it out of argv and shell history")
     auth_login.set_defaults(func=cmd_auth_login)
 
     auth_sub.add_parser(
@@ -333,7 +382,10 @@ def build_parser() -> argparse.ArgumentParser:
              "(GraphQL; needs `auth login`)")
     credits.add_argument("--series", action="store_true",
                          help="consumption over time instead of the totals")
-    credits.add_argument("--since", metavar="DATE")
+    credits.add_argument(
+        "--since", metavar="DATE",
+        help="calendar date, sent to the gateway as-is (e.g. 2026-08-01). "
+             "Not a duration -- `watch changes --since` is the one that is.")
     credits.add_argument("--until", metavar="DATE")
     credits.set_defaults(func=cmd_credits)
 
@@ -405,6 +457,13 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except CredentialError as exc:
         print(f"Credential error: {redact(str(exc))}", file=sys.stderr)
+        return EXIT_FAILURE
+    except auth.SessionError as exc:
+        # Ahead of LoginError, which it subclasses. Thirteen commands reach the
+        # gateway through `auth.access_token()` without anyone logging in, and
+        # labelling those "Login failed" told the reader their credentials had
+        # been rejected at a login they never performed.
+        print(f"Session error: {redact(str(exc))}", file=sys.stderr)
         return EXIT_FAILURE
     except auth.LoginError as exc:
         print(f"Login failed: {redact(str(exc))}", file=sys.stderr)

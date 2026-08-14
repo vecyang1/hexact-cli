@@ -29,12 +29,24 @@ No official CLI, SDK, or MCP server exists for any of these products.
 
 ```bash
 pipx install git+https://github.com/vecyang1/hexact-cli   # or: uv tool install git+https://github.com/vecyang1/hexact-cli
-hexact doctor
+hexact --version
 ```
 
-Either tool puts a `hexact` binary on your `PATH` in its own virtualenv. There
-is nothing to resolve — the dependency list is empty — so the install cannot
-conflict with anything already on the machine.
+Either tool builds a `hexact` binary in its own virtualenv. There is nothing to
+resolve — the dependency list is empty — so the install cannot conflict with
+anything already on the machine.
+
+**If that second line prints `command not found`**, the install worked and the
+directory it wrote to is not on your `PATH`. pipx puts binaries in
+`~/.local/bin`; `pipx ensurepath` adds it, then open a new shell. `pipx list`
+confirms what is actually installed. This is the one step CI cannot prove for
+you — it builds and installs the wheel into a clean virtualenv, but a runner
+never exercises your shell's `PATH`.
+
+Configure a credential next, then verify with `hexact doctor` — see
+[Credentials](#credentials). Running `doctor` before any key exists reports
+`[SKIP]` for every product and exits **2**, because a check that examined
+nothing is not a pass.
 
 From a clone, `pip install .` gives the same binary:
 
@@ -60,14 +72,20 @@ Keys never live in this repository. They are resolved at runtime, first hit wins
 | --- | --- | --- |
 | 1 | Environment | `export HEXOWATCH_API_KEY=…` |
 | 2 | 1Password | `export HEXOWATCH_OP_REF='op://Vault/Item/credential'` |
+| 2a | 1Password, unattended | also `export HEXACT_OP_CMD='<your service-account wrapper>'` |
 | 3 | File | `~/.config/hexact/credentials.env`, mode `600` |
 
 The 1Password route is the one to use for anything unattended — the repo holds
-only an `op://` pointer, which is not a secret. `HEXACT_OP_CMD` overrides the
-executable, so a service-account wrapper can be used without editing code.
+only an `op://` pointer, which is not a secret. Row 2a is not optional for a
+cron job or an agent: stock `op read` blocks on an interactive biometric unlock,
+which in an unattended run means a 30-second timeout and a `CredentialError`,
+not a prompt anyone can answer. `HEXACT_OP_CMD` replaces the executable (shell
+word list, so it may carry its own arguments), letting a service-account
+wrapper stand in without editing code.
 
 Substitute `HEXOMATIC_` / `HEXOMETER_` for the other products. Each is
-independent; `doctor` reports an unconfigured product as `SKIP`, not `FAIL`.
+independent; `doctor` reports one unconfigured product as `SKIP`, not `FAIL` —
+but *every* product skipped exits 2, since nothing was verified.
 
 Get the keys from the **API/Webhook** section of each dashboard's settings
 (Hexometer's key is per-*property*, not per-account).
@@ -113,7 +131,7 @@ exist were unreachable.
 
 ### Session — `hexact auth`
 
-`login --email you@example.com`, `status`.
+`login --email you@example.com [--password-stdin]`, `status`.
 
 The REST API has **no delete and no update**. Not undocumented — absent: `DELETE`
 in five path shapes and `PUT`/`PATCH` in three all return the backend's Express
@@ -134,6 +152,20 @@ Only the long-lived refresh token is saved, into the same credentials file
 visible to every process and lands in shell history — used for one request, and
 never written. Short-lived access tokens are minted per command and held in
 memory only.
+
+**With no terminal, `login` refuses instead of prompting.** `getpass` answers
+that case by falling back to a *plain, echoing* read of stdin — it prints
+`Warning: Password input may be echoed.` and carries on — which in a CI job, a
+pipeline or an agent tool call writes the account password into whatever is
+capturing that stream. For automation, pipe it in explicitly:
+
+```bash
+some-secret-source | hexact auth login --email you@example.com --password-stdin
+```
+
+`--password-stdin` reads exactly one line, strips only the newline, and refuses
+if stdin is a terminal — because with no pipe attached it would sit there
+echoing what you type. Either way the password never reaches argv.
 
 **This credential is broader than the API keys.** A REST key reaches six
 documented endpoints; a refresh token reaches the whole account, including
@@ -293,8 +325,10 @@ The things that cost real debugging time:
 - **Hostnames do not identify products.** All Hexact API hosts share one
   backend, so `api.hexospark.com` answers Hexometer's routes with a plausible
   `invalid api key`. Identify a product by its documented endpoints.
-- **Hexowatch has no update and no delete endpoint.** Retiring a monitor means
-  pausing it; retuning one means recreating it.
+- **Hexowatch's *REST* API has no update and no delete.** Scope the claim to the
+  transport you tested: the GraphQL gateway has both, and this CLI ships them as
+  `watch delete` and `watch retune`. Reading "no endpoint" as "impossible" is
+  what made earlier versions of this file prescribe pause-and-recreate.
 
 ## Products without an API
 

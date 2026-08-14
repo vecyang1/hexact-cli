@@ -78,8 +78,8 @@ MUTATIONS = [
         # authenticates for an hour and then dies unrenewable.
         "login stores the access token instead of the refresh token",
         "hexact/auth.py",
-        'token = _token_from_response(data, "authRefreshToken", field_name="refresh_token")',
-        'token = _token_from_response(data, "authRefreshToken", field_name="token")',
+        '        data, "authRefreshToken", field_name="refresh_token",',
+        '        data, "authRefreshToken", field_name="token",',
     ),
     (
         "a deleted monitor reading back as all-nulls counts as still present",
@@ -197,6 +197,100 @@ MUTATIONS = [
         "hexact/config.py",
         '            "No Hexact session token found. This command reads the GraphQL "',
         '            "No Hexowatch session token found. Delete and update are GraphQL-only "',
+    ),
+    (
+        # The pre-0.7.0 behaviour exactly: let getpass decide, and it answers
+        # "no terminal" by echoing the password into whatever is capturing the
+        # stream. The mutation is a one-word lie, which is why it needs a test.
+        "the password prompt stops checking for a terminal before reading",
+        "hexact/auth.py",
+        "    if not _terminal_available():",
+        "    if False:",
+    ),
+    (
+        "--password-stdin stops refusing a terminal and echoes what is typed",
+        "hexact/auth.py",
+        "    if sys.stdin.isatty():",
+        "    if False:",
+    ),
+    (
+        # Reverting doctor to two outcomes. Nothing errors, nothing looks
+        # different -- the tick just stops meaning anything.
+        "doctor reports a pass again after examining zero credentials",
+        "hexact/cli.py",
+        '    if worst == EXIT_OK and not any(o["ok"] for o in results.values()):',
+        "    if False:",
+    ),
+    (
+        "doctor stops looking at the gateway credential half the commands need",
+        "hexact/cli.py",
+        '    if verdict == "rejected":',
+        "    if False:",
+    ),
+    (
+        "a stored token failing is labelled a failed login again",
+        "hexact/cli.py",
+        '        print(f"Session error: {redact(str(exc))}", file=sys.stderr)',
+        '        print(f"Login failed: {redact(str(exc))}", file=sys.stderr)',
+    ),
+    (
+        # The output that contradicted itself: "the stored value is an access
+        # token" printed directly above "an opaque token (not a JWT)".
+        "the wrong-field diagnosis is asserted again without the evidence",
+        "hexact/auth.py",
+        '    if classify_credential(refresh)["kind"] == "access":',
+        "    if True:",
+    ),
+    (
+        "a printed command drifts from the parser that has to accept it",
+        "hexact/cli_hexowatch.py",
+        "hexact watch list --tag <id>",
+        "hexact watch monitors --tag <id>",
+    ),
+    (
+        "unmute resolves a credential before checking it was called correctly",
+        "hexact/cli_hexowatch.py",
+        "    targets = [int(i) for i in args.ids]\n"
+        "    channel_ids = [] if args.mute else [int(i) for i in args.channels]",
+        "    token = auth.access_token()\n"
+        "    targets = [int(i) for i in args.ids]\n"
+        "    channel_ids = [] if args.mute else [int(i) for i in args.channels]",
+    ),
+    (
+        "a bad --since is hidden behind credential resolution again",
+        "hexact/cli_watch_rest.py",
+        "    cutoff = parse_since(args.since)\n    key = resolve_key(HEXOWATCH)",
+        "    key = resolve_key(HEXOWATCH)\n    cutoff = parse_since(args.since)",
+    ),
+    (
+        "the date flags stop refusing a duration and let the gateway guess",
+        "hexact/cli_common.py",
+        "    if _DURATION.match(value.strip().lower()):",
+        "    if False:",
+    ),
+    (
+        "the duration help stops saying m means months",
+        "hexact/cli_common.py",
+        '    "m (MONTHS, 30 days each) -- e.g. 24h, 7d, 2w, 3m. Minutes are not "',
+        '    "m -- e.g. 24h, 7d, 2w, 1m. Minutes are not "',
+    ),
+    (
+        "an unreachable gateway and a refused token collapse to one exit code",
+        "hexact/cli_auth.py",
+        '    "missing": EXIT_USAGE,          # nothing to check',
+        '    "missing": EXIT_FAILURE,        # nothing to check',
+    ),
+    (
+        "a null gateway field asserts bad auth again for accounts that lack access",
+        "hexact/graphql.py",
+        '            "rejected, or this account has no access to "',
+        '            "rejected. Run: hexact auth login --email <you> "',
+    ),
+    (
+        "the Hexometer key pointer goes back to naming the account settings page",
+        "hexact/config.py",
+        '    HEXOMETER: ("Hexometer\'s key is issued per PROPERTY, not per account -- open "',
+        '    HEXOMETER: ("The key is in the API/Webhook section of Hexometer\'s settings. "',
     ),
 ]
 
