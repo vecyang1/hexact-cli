@@ -268,14 +268,14 @@ MUTATIONS = [
         # Reverting to explicit nulls: no error, no null, a stated zero.
         "unset monitor filters go back to being sent as explicit nulls",
         "hexact/graphql.py",
-        "    variables.update({k: v for k, v in optional.items() if v is not None})",
-        "    variables.update(optional)",
+        "    return {name: value for name, value in mapping.items() if value is not None}",
+        "    return dict(mapping)",
     ),
     (
         "a filter of False is dropped as if it had never been asked for",
         "hexact/graphql.py",
-        "    variables.update({k: v for k, v in optional.items() if v is not None})",
-        "    variables.update({k: v for k, v in optional.items() if v})",
+        "    return {name: value for name, value in mapping.items() if value is not None}",
+        "    return {name: value for name, value in mapping.items() if value}",
     ),
     (
         "doctor stops looking at the gateway credential half the commands need",

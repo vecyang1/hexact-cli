@@ -288,6 +288,22 @@ def reject_all_null(payload: dict[str, Any], keys: tuple[str, ...], *, source: s
     return payload
 
 
+def only_supplied(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Drop the entries the caller never set.
+
+    An omitted variable and an explicit ``null`` are different questions to
+    this gateway, and the second one matches nothing. Measured 2026-08-14
+    against REST as a control: `getUserWatchProperties` returned 45 monitors
+    with `page`+`limit` alone and **0** with the same call plus null filters.
+    No error, no null container -- a stated zero, which is precisely what
+    :func:`reject_all_null` is unable to catch.
+
+    `is not None` rather than truthiness: `active=False` and `limit=0` are
+    answers, `None` is the absence of one.
+    """
+    return {name: value for name, value in mapping.items() if value is not None}
+
+
 def mutate(
     operation: str,
     arguments: dict[str, tuple[str, Any]],
@@ -705,7 +721,7 @@ def list_monitors(
         "tags": [int(t) for t in tags] if tags else None,
         "tool": tool,
     }
-    variables.update({k: v for k, v in optional.items() if v is not None})
+    variables.update(only_supplied(optional))
     data = execute(USER_PROPERTIES_QUERY, variables, token=token)
     return reject_all_null(
         unwrap(data, "Watch", "getUserWatchProperties"),
@@ -732,7 +748,8 @@ def notification_breakdown(
     token: str, *, since: str | None = None, until: str | None = None
 ) -> Any:
     """Notification counts grouped by the gateway's own categories."""
-    data = execute(NOTIFICATIONS_PIE_QUERY, {"from": since, "to": until}, token=token)
+    data = execute(NOTIFICATIONS_PIE_QUERY,
+                   only_supplied({"from": since, "to": until}), token=token)
     return unwrap(data, "WatchNotification", "watchNotificationsPieChart")
 
 

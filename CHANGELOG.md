@@ -7,6 +7,21 @@ several of these releases exist because an earlier claim in this repository
 turned out to be wrong, and a changelog that hides that teaches the next reader
 to trust the wrong sentence.
 
+## 0.7.4 — 2026-08-14
+
+- **`graphql.only_supplied()`** — the omit-a-null-filter rule from 0.7.3 now has
+  one owner instead of a copy per call site, and the two remaining places that
+  handed the gateway a present-and-null variable use it: the notification
+  breakdown (`from`/`to`) and Hexospark's `settings`, which was sent as `null`
+  whenever the caller passed no filter.
+- **Measured, not assumed, for the four commands that still return nothing:**
+  `watch noise` and `matic credits` come back null at the *namespace* level and
+  `spark contacts` / `spark campaigns` return an empty list with a null total —
+  the same after the fix as before it, with a working session and REST
+  answering 45 monitors as a control. So these are entitlement or genuinely
+  empty, not the null-filter bug, and the client keeps refusing to render them
+  as "no data".
+
 ## 0.7.3 — 2026-08-14
 
 `hexact watch list` has reported an empty account for as long as it has

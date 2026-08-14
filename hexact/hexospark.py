@@ -63,12 +63,18 @@ def crm_contacts(
     """
     settings = {"campaign_id": campaign_id, "filter": filter_text}
     settings = {k: v for k, v in settings.items() if v is not None}
-    data = graphql.execute(CRM_CONTACTS_QUERY, {"settings": settings or None}, token=token)
+    # Omit `settings` entirely rather than sending it as null: a
+    # present-and-null filter matches nothing on this gateway.
+    data = graphql.execute(CRM_CONTACTS_QUERY,
+                           graphql.only_supplied({"settings": settings or None}),
+                           token=token)
     return graphql.unwrap(data, "HexosparkCrmContact", "getCrmContacts")
 
 
 def campaigns(token: str, *, filter_text: str | None = None) -> dict[str, Any]:
     """Outreach campaigns with their schedule, status and contact count."""
     settings = {"filter": filter_text} if filter_text else None
-    data = graphql.execute(CAMPAIGNS_QUERY, {"settings": settings}, token=token)
+    data = graphql.execute(CAMPAIGNS_QUERY,
+                           graphql.only_supplied({"settings": settings}),
+                           token=token)
     return graphql.unwrap(data, "HexosparkCampaign", "getCampaigns")
