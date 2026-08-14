@@ -113,7 +113,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     if worst == EXIT_OK and not any(o["ok"] for o in results.values()):
         # stderr, so `--json` stays a clean pipe while a human still sees that
-        # the tick underneath means nothing.
+        # the tick underneath means nothing. Flush first: the two streams
+        # buffer differently, and without this the summary printed *above* the
+        # lines it is summarising whenever output was captured rather than a tty.
+        sys.stdout.flush()
         print(
             "\nNo verdict: no credential was configured for any product, so "
             "nothing was verified.\nThis is not a pass. Set at least one key "
