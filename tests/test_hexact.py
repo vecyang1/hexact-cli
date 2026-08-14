@@ -2288,3 +2288,142 @@ class TestAPasswordPromptWithNoTerminalIsRefused(unittest.TestCase):
         self.assertNotIn("EOFError", combined)
         self.assertNotIn("Traceback", combined)
         self.assertIn("--password-stdin", combined)
+
+
+class TestUnauthenticatedReadIsNotAnEmptyAccount(unittest.TestCase):
+    """Three commands reported an expired session as an account with nothing in it.
+
+    Measured 2026-08-14 with a deliberately invalid token, against an account
+    that REST simultaneously reported as 48 monitors and 3 notification
+    channels. The gateway is honest -- every member of the container comes back
+    ``null``. The empty answer was manufactured locally, by an ``or []`` in each
+    renderer: the idiom this project's style rules reserve for optional addends
+    whose default is genuinely the neutral element, used here on values a reader
+    takes as fact.
+
+    ``unwrap`` cannot catch this. It guards the two levels GraphQL wraps every
+    answer in, and both of those are non-null; the nulls are one level further
+    down, inside the payload.
+    """
+
+    # Verbatim from the probe against the live gateway. Do not "tidy" these
+    # into empty lists -- an empty list is the shape the bug produced, not the
+    # shape the server sends.
+    LIST = {"data": {"Watch": {"getUserWatchProperties": {
+        "totalCount": None, "watchProperties": None}}}}
+    CHANNELS = {"data": {"WatchIntegration": {"getUserIntegrations": {
+        "integrations": None}}}}
+    SETTINGS = {"data": {"UserWatchSettings": {"get": {
+        "emails": None, "webhooks": None}}}}
+
+    # The same reads on an account that genuinely has nothing. These must keep
+    # working: a guard that cannot tell "unreadable" from "empty" has only moved
+    # the lie, not removed it.
+    EMPTY_LIST = {"data": {"Watch": {"getUserWatchProperties": {
+        "totalCount": 0, "watchProperties": []}}}}
+    EMPTY_CHANNELS = {"data": {"WatchIntegration": {"getUserIntegrations": {
+        "integrations": []}}}}
+    EMPTY_SETTINGS = {"data": {"UserWatchSettings": {"get": {
+        "emails": [], "webhooks": []}}}}
+
+    def _run(self, argv, payload):
+        out, err = io.StringIO(), io.StringIO()
+        # Patched on the module that defines it, so the patch survives the
+        # command moving between cli_* modules.
+        with mock.patch.object(auth, "access_token", return_value="live-looking"):
+            with _respond_with(payload):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_watch_list_refuses_instead_of_reporting_zero_monitors(self):
+        code, out, err = self._run(["watch", "list"], self.LIST)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertNotIn("0 of", out)
+        self.assertNotIn("monitor(s)", out)
+        self.assertIn("empty", (out + err).lower())
+
+    def test_watch_channels_refuses_instead_of_reporting_no_channels(self):
+        code, out, err = self._run(["watch", "channels"], self.CHANNELS)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertNotIn("No notification channels registered", out)
+
+    def test_watch_settings_refuses_instead_of_reporting_zero_recipients(self):
+        code, out, err = self._run(["watch", "settings"], self.SETTINGS)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertNotIn("(0)", out)
+
+    def test_json_output_carries_no_fabricated_empty_collection(self):
+        """``--json`` is what a script reads, and it lied in the same way.
+
+        The renderer was not the only place the empty list was invented: the
+        payload handed to ``emit`` carried it too, so a consumer piping
+        ``--json`` saw ``"watchProperties": []`` for an account with 48.
+        """
+        code, out, _ = self._run(["--json", "watch", "list"], self.LIST)
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("[]", out)
+
+    def test_a_genuinely_empty_account_still_renders(self):
+        for argv, payload in (
+            (["watch", "list"], self.EMPTY_LIST),
+            (["watch", "channels"], self.EMPTY_CHANNELS),
+            (["watch", "settings"], self.EMPTY_SETTINGS),
+        ):
+            with self.subTest(argv=argv):
+                code, out, err = self._run(argv, payload)
+                self.assertEqual(code, 0, out + err)
+
+    def test_a_partially_null_payload_reports_that_part_as_unreadable(self):
+        """Not every null is an auth failure, and not every null is a zero.
+
+        A container with one real member is a live read, so it must not be
+        refused -- but the member that came back null still has no count, and
+        printing ``0`` for it would be the original bug at a smaller scale.
+        """
+        payload = {"data": {"UserWatchSettings": {"get": {
+            "emails": [{"email": "a@b.test", "enabled": True, "verified": True}],
+            "webhooks": None}}}}
+        code, out, err = self._run(["watch", "settings"], payload)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("a@b.test", out)
+        self.assertNotIn("Account webhooks (0)", out)
+        self.assertIn("unreadable", out.lower())
+
+    def test_one_auth_remedy_reaches_the_user_not_two_that_disagree(self):
+        """The top-level handler used to bolt its own remedy onto every AuthError.
+
+        From that distance it could not know which applied, so an
+        unauthenticated read printed `Check which: hexact auth status` from the
+        raise site and `Run: hexact auth login --email <you>` from the handler,
+        one line apart -- the second asserting the very cause the first had
+        deliberately declined to assert. Whichever the reader follows, one of
+        them was written by something that did not know.
+        """
+        _, out, err = self._run(["watch", "list"], self.LIST)
+        combined = out + err
+        self.assertIn("hexact auth status", combined)
+        self.assertNotIn("hexact auth login", combined)
+
+    def test_a_server_rejection_still_names_the_command_that_fixes_it(self):
+        """The other direction: dropping the blanket remedy must not leave the
+        one failure that *is* a plain credential rejection with no advice."""
+        rejected = {"errors": [{"message": "Unauthenticated."}]}
+        _, out, err = self._run(["watch", "list"], rejected)
+        self.assertIn("hexact auth login --email", out + err)
+
+    def test_a_page_with_a_count_but_no_rows_is_unreadable_not_empty(self):
+        """The listing's own partial-null case, and the mutation harness is why
+        it exists: the `watchProperties is None` branch survived a mutation
+        because nothing exercised it.
+
+        `reject_all_null` only refuses when *every* member is null, so a
+        container reporting a total while withholding the rows reaches the
+        renderer -- and folding that into `[]` would print `0 of 5`.
+        """
+        payload = {"data": {"Watch": {"getUserWatchProperties": {
+            "totalCount": 5, "watchProperties": None}}}}
+        code, out, err = self._run(["watch", "list"], payload)
+        self.assertNotIn("0 of 5", out)
+        self.assertNotIn("monitor(s)", out)
+        self.assertIn("unreadable", (out + err).lower())

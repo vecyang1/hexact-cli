@@ -181,7 +181,17 @@ def execute(
     if errors:
         message = str(errors[0].get("message", "unknown"))
         if any(marker in message.lower() for marker in _UNAUTHENTICATED_MARKERS):
-            raise AuthError(redact_token(message, token))
+            # Carry the remedy here rather than letting the top-level handler
+            # bolt a generic one onto every AuthError. This is the one raise
+            # site where the *server* said the credential was rejected, so
+            # "log in again" is the right advice; the null-shaped failures
+            # below cannot tell rejection from missing entitlement and must be
+            # allowed to say so instead of being overwritten.
+            raise AuthError(
+                redact_token(message, token)
+                + "\n  The gateway rejected the session credential.\n"
+                "  Run: hexact auth login --email <you>"
+            )
         raise HexactAPIError(redact_token(f"GraphQL error: {message}", token))
 
     data = payload.get("data")
@@ -203,6 +213,13 @@ def unwrap(data: dict[str, Any], namespace: str, field: str) -> Any:
     Because that ambiguity is real and cannot be resolved from the response
     alone, this fails closed. A genuinely empty collection is returned by the
     gateway as ``[]``, not ``null``, so nothing legitimate is lost.
+
+    **This guard is not sufficient on its own.** It covers the two levels
+    GraphQL wraps every answer in, and an unauthenticated read can hand back a
+    non-null container whose members are all null -- which passes here and was
+    then rendered as an empty account by three commands. See
+    :func:`reject_all_null`, which every accessor returning a container must
+    also use.
     """
     # Both messages name every cause that reaches them, not the commonest one.
     # This function is shared by every gateway read across four products, so a
@@ -229,6 +246,40 @@ def unwrap(data: dict[str, Any], namespace: str, field: str) -> Any:
             "  Check which: hexact auth status"
         )
     return value
+
+
+def reject_all_null(payload: dict[str, Any], keys: tuple[str, ...], *, source: str) -> dict[str, Any]:
+    """Refuse a container whose every member is ``null``.
+
+    :func:`unwrap` guards the two levels GraphQL wraps every answer in and stops
+    there, which is one level short. Measured 2026-08-14 with a deliberately
+    invalid token, against an account REST simultaneously reported as 48
+    monitors and 3 notification channels, the gateway returned a **non-null
+    container of nulls** and sailed past ``unwrap`` every time::
+
+        Watch.getUserWatchProperties      {"totalCount": null, "watchProperties": null}
+        WatchIntegration.getUserIntegrations  {"integrations": null}
+        UserWatchSettings.get             {"emails": null, "webhooks": null}
+
+    Each renderer then applied ``or []`` and reported the account as empty. The
+    server was honest throughout; the zero was invented here.
+
+    The test is *every* member, not any member, and that is deliberate. A single
+    null member is ordinary -- an account with recipients but no webhooks looks
+    like that -- so refusing on the first null would break working reads. All
+    members null is the shape no live account produces, because a live read
+    fills at least the field the caller asked for.
+    """
+    if payload and all(payload.get(key) is None for key in keys):
+        raise AuthError(
+            f"{source} came back with every field null "
+            f"({', '.join(keys)}). It does not mean the account is empty -- a "
+            "live read fills at least one of them, so this client refuses to "
+            "render it as zero. Either the session token is missing, expired "
+            "or rejected, or this account cannot read that field.\n"
+            "  Check which: hexact auth status"
+        )
+    return payload
 
 
 def mutate(
@@ -361,13 +412,21 @@ def get_watch_property_integrations(token: str, monitoring_id: int) -> Any:
 def get_user_integrations(token: str) -> Any:
     """Every notification channel on the account, with its id and type."""
     data = execute(USER_INTEGRATIONS_QUERY, token=token)
-    return unwrap(data, "WatchIntegration", "getUserIntegrations")
+    return reject_all_null(
+        unwrap(data, "WatchIntegration", "getUserIntegrations"),
+        ("integrations",),
+        source="WatchIntegration.getUserIntegrations",
+    )
 
 
 def get_watch_settings(token: str) -> Any:
     """Account-level notification settings: email recipients and webhooks."""
     data = execute(WATCH_SETTINGS_QUERY, token=token)
-    return unwrap(data, "UserWatchSettings", "get")
+    return reject_all_null(
+        unwrap(data, "UserWatchSettings", "get"),
+        ("emails", "webhooks"),
+        source="UserWatchSettings.get",
+    )
 
 
 def set_email_notifications(token: str, enabled: bool) -> dict[str, Any]:
@@ -624,7 +683,11 @@ def list_monitors(
         },
         token=token,
     )
-    return unwrap(data, "Watch", "getUserWatchProperties")
+    return reject_all_null(
+        unwrap(data, "Watch", "getUserWatchProperties"),
+        ("totalCount", "watchProperties"),
+        source="Watch.getUserWatchProperties",
+    )
 
 
 # --- Notification volume ---------------------------------------------------

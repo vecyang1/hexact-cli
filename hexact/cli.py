@@ -472,10 +472,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Login failed: {redact(str(exc))}", file=sys.stderr)
         return EXIT_FAILURE
     except graphql.AuthError as exc:
-        # Ahead of HexactAPIError, which it subclasses, so the remedy stays
-        # specific: an expired session token is not a generic API failure.
-        print(f"Not authenticated: {exc}\nRun: hexact auth login --email <you>",
-              file=sys.stderr)
+        # Ahead of HexactAPIError, which it subclasses, so the label stays
+        # specific: a rejected session token is not a generic API failure.
+        #
+        # No remedy is appended here. Every raise site already carries its own,
+        # and a second one bolted on from this distance cannot know which
+        # applies -- it printed `Run: hexact auth login --email <you>` directly
+        # beneath a message that had deliberately said `Check which: hexact
+        # auth status`, because the null-shaped failures cannot distinguish an
+        # expired token from an account that never had access to that
+        # namespace. Two remedies, one of them asserting the cause the other
+        # refused to assert.
+        print(f"Not authenticated: {exc}", file=sys.stderr)
         return EXIT_FAILURE
     except HexactAPIError as exc:
         print(f"API error: {exc}", file=sys.stderr)

@@ -190,8 +190,10 @@ def cmd_duplicates(args: argparse.Namespace) -> int:
     :func:`resolve_tool`). Correctness is worth the requests: the output of this
     command is a list of things to switch off.
 
-    Hexowatch exposes no delete endpoint, so the remedy printed is a pause
-    command -- and it is printed, not executed.
+    The remedy is printed, never executed: deletion is irreversible and
+    Hexowatch has no trash. It offers the delete first because that is the one
+    that stops paying for the duplicate; pause is the fallback for anyone who
+    has not logged in to the gateway yet.
     """
     key = resolve_key(HEXOWATCH)
     monitors = _rows(hexowatch.list_monitored_urls(key), "monitored_urls", "data", "urls")
@@ -248,8 +250,19 @@ def cmd_duplicates(args: argparse.Namespace) -> int:
                 print(f"  {group['address']}  [{group['tool']}]")
                 print(f"      keep {keep}  |  redundant: {', '.join(map(str, drop))}")
             ids = " ".join(str(i) for i in data["redundant_ids"])
-            print(f"\n  Hexowatch has no delete endpoint. To stop the extra checks "
-                  f"and notifications:\n    hexact watch pause {ids}")
+            # This said "Hexowatch has no delete endpoint" and offered only
+            # pause, for as long as `watch delete` has existed in this same
+            # repository. The claim was true of REST and was never rescoped, so
+            # the one place that produces a list of things to switch off kept
+            # recommending the weaker of the two remedies it ships.
+            print(f"\n  A real duplicate costs twice: one check against the "
+                  f"monthly allowance, and one extra notification per change.")
+            print(f"    hexact watch delete {ids} --yes   # removes them")
+            print(f"    hexact watch pause {ids}          # REST-only fallback")
+            print("\n  Delete is irreversible and Hexowatch has no trash. It "
+                  "also goes through the gateway, so it needs")
+            print("  hexact auth login --email <you>  first. Pause needs "
+                  "nothing, and leaves the monitor in the list.")
         for row in data["unresolved"]:
             print(f"  ! tool unknown, not compared: {row['id']} {row['address']}",
                   file=sys.stderr)

@@ -292,6 +292,38 @@ MUTATIONS = [
         '    HEXOMETER: ("Hexometer\'s key is issued per PROPERTY, not per account -- open "',
         '    HEXOMETER: ("The key is in the API/Webhook section of Hexometer\'s settings. "',
     ),
+    (
+        "a container of nulls is rendered as an empty account again",
+        "hexact/graphql.py",
+        '    if payload and all(payload.get(key) is None for key in keys):',
+        '    if False:',
+    ),
+    (
+        "the monitor listing folds an unreadable page back into an empty one",
+        "hexact/cli_hexowatch.py",
+        '        shown = data.get("watchProperties")\n        if shown is None:',
+        '        shown = data.get("watchProperties") or []\n        if False:',
+    ),
+    (
+        "unreadable webhooks are counted as zero webhooks again",
+        "hexact/cli_hexowatch.py",
+        '        hooks = data.get("webhooks")\n        if hooks is None:',
+        '        hooks = data.get("webhooks") or []\n        if False:',
+    ),
+    (
+        "the top-level handler bolts a second, contradicting remedy back on",
+        "hexact/cli.py",
+        '        print(f"Not authenticated: {exc}", file=sys.stderr)',
+        '        print(f"Not authenticated: {exc}\\nRun: hexact auth login --email <you>",'
+        '\n              file=sys.stderr)',
+    ),
+    (
+        "a server-rejected credential is left with no remedy at all",
+        "hexact/graphql.py",
+        '                + "\\n  The gateway rejected the session credential.\\n"\n'
+        '                "  Run: hexact auth login --email <you>"',
+        '                + ""',
+    ),
 ]
 
 
@@ -314,6 +346,14 @@ def run(label: str, relative: str, find: str, replace: str) -> bool:
         completed = subprocess.run(
             [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
             cwd=target, capture_output=True, text=True, timeout=300,
+            # A mutated build may reach a blocking read the real one cannot.
+            # Measured: deleting the terminal check from `prompt_password` lets
+            # `getpass` open /dev/tty, and with a terminal inherited from the
+            # harness it waits there forever -- the 300s timeout then aborts
+            # the whole run, so a mutation that the suite catches perfectly
+            # well reports as a crash instead. Detach stdin and the same
+            # mutation is caught in under two seconds.
+            stdin=subprocess.DEVNULL,
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -329,6 +369,7 @@ def main() -> int:
     baseline = subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
         cwd=REPO, capture_output=True, text=True, timeout=300,
+        stdin=subprocess.DEVNULL,  # same reason as in `run` above
     )
     if baseline.returncode != 0:
         print("Baseline suite is already failing; fix that before mutating.")

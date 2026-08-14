@@ -138,13 +138,25 @@ def cmd_monitors_full(args: argparse.Namespace) -> int:
         token, page=args.page, limit=args.limit, active=args.active,
         search=args.search, tags=args.tags or None, tool=args.tool,
     )
-    rows = (result or {}).get("watchProperties") or []
+    # No `or []` on either of these. `graphql.reject_all_null` has already
+    # refused the all-null container an unauthenticated read returns, but a
+    # single null member still means "not reported", and folding it into 0 or
+    # [] here is how this command printed `0 of None monitor(s)` for an account
+    # holding 48.
+    rows = (result or {}).get("watchProperties")
     total = (result or {}).get("totalCount")
 
     def render(data: dict[str, Any]) -> None:
-        shown = data.get("watchProperties") or []
-        print(f"{len(shown)} of {data.get('totalCount')} monitor(s) "
-              f"(page {args.page}, limit {args.limit}):\n")
+        shown = data.get("watchProperties")
+        if shown is None:
+            print("The gateway did not return the monitor list — null, not an "
+                  "empty page. Treat the count as unreadable, not zero.",
+                  file=sys.stderr)
+            return
+        counted = data.get("totalCount")
+        scope = f"{len(shown)} of {counted}" if counted is not None else (
+            f"{len(shown)}, of an unreported total")
+        print(f"{scope} monitor(s) (page {args.page}, limit {args.limit}):\n")
         for row in shown:
             tags = ", ".join(t.get("name", "") for t in (row.get("tags") or []))
             state = "active" if row.get("active") else "paused"
@@ -268,10 +280,15 @@ def cmd_watch_channels(args: argparse.Namespace) -> int:
     """
     token = auth.access_token()
     result = graphql.get_user_integrations(token)
-    channels = (result or {}).get("integrations") or []
+    # `reject_all_null` guarantees this is a list: `integrations` is the only
+    # member of the container, so a null one is the all-null case and has
+    # already been refused. Read it directly rather than through `or []`, which
+    # would quietly restore "unreadable reads as empty" if a member is ever
+    # added alongside it.
+    channels = (result or {}).get("integrations")
 
     def render(data: dict[str, Any]) -> None:
-        rows = data.get("integrations") or []
+        rows = data["integrations"]
         if not rows:
             print("No notification channels registered.")
             return
@@ -296,14 +313,25 @@ def cmd_watch_settings(args: argparse.Namespace) -> int:
     token = auth.access_token()
     settings = graphql.get_watch_settings(token) or {}
 
+    # Three states per list, not two. `reject_all_null` has refused the case
+    # where *both* came back null; one of them alone still can, and an account
+    # with recipients but unreadable webhooks must not be told it has none.
     def render(data: dict[str, Any]) -> None:
-        emails = data.get("emails") or []
-        print(f"Email recipients ({len(emails)}):")
-        for row in emails:
-            state = "on " if row.get("enabled") else "OFF"
-            verified = "" if row.get("verified") else "  (unverified)"
-            print(f"  [{state}] {row.get('email')}{verified}")
-        hooks = data.get("webhooks") or []
+        emails = data.get("emails")
+        if emails is None:
+            print("Email recipients: unreadable — the gateway returned null, "
+                  "which is not the same as none.")
+        else:
+            print(f"Email recipients ({len(emails)}):")
+            for row in emails:
+                state = "on " if row.get("enabled") else "OFF"
+                verified = "" if row.get("verified") else "  (unverified)"
+                print(f"  [{state}] {row.get('email')}{verified}")
+        hooks = data.get("webhooks")
+        if hooks is None:
+            print("\nAccount webhooks: unreadable — the gateway returned null, "
+                  "which is not the same as none.")
+            return
         print(f"\nAccount webhooks ({len(hooks)}):")
         for row in hooks:
             print(f"  {row.get('subscriptionId')}  type={row.get('type')}")

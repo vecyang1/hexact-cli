@@ -113,6 +113,49 @@ where the rest of this came from. None of it was visible from inside the repo.
   exited 0 while every GraphQL command — over half the read surface — failed on
   a credential nothing had looked at.
 
+Running the gateway reads against an account whose session had expired, with
+REST answering at the same moment as a control, produced the rest.
+
+- **Fixed, correctness: `watch list`, `watch channels` and `watch settings`
+  reported an expired session as an empty account.** They printed
+  `0 of None monitor(s)`, `No notification channels registered.` and
+  `Email recipients (0)` — and exited `0` — for an account REST simultaneously
+  reported as 48 monitors and 3 channels. A deliberately invalid token produced
+  byte-identical output, so nothing on screen distinguished them. `--json` was
+  worse: it emitted `"watchProperties": []`, which a script cannot tell from a
+  real answer at all.
+
+  The gateway was honest throughout. It returns a non-null *container* whose
+  members are all null (`{"totalCount": null, "watchProperties": null}`), which
+  `graphql.unwrap` passes because it guards the two levels GraphQL wraps every
+  answer in and the nulls are one level below that. The empty list was invented
+  locally, by an `or []` in each renderer. New `graphql.reject_all_null` refuses
+  a container whose every member is null — *every*, not any, so an account with
+  recipients but no webhooks still reads fine — and the renderers now print
+  "unreadable" for a single null member instead of `0`. Believed before: that
+  `unwrap` alone was sufficient, on the grounds that a genuinely empty
+  collection comes back as `[]`. True at the field level, false one level down.
+- **Fixed: two remedies, disagreeing, one line apart.** The top-level handler
+  appended `Run: hexact auth login --email <you>` to every `AuthError`,
+  including the ones whose own message had deliberately said
+  `Check which: hexact auth status` because they cannot tell an expired token
+  from an account that never had access to that namespace. The handler no
+  longer appends anything; the one raise site where the *server* rejected the
+  credential now carries the login remedy itself.
+- **Fixed: `watch duplicates` recommended the weaker of the two remedies it
+  ships.** It printed "Hexowatch has no delete endpoint" and offered only
+  `watch pause`, for as long as `watch delete` has existed in this repository —
+  the claim was true of REST and was never rescoped. The one command whose
+  output is a list of things to switch off now leads with the delete, names its
+  irreversibility and its `auth login` prerequisite, and keeps pause as the
+  fallback.
+- **Fixed: `tests/mutation_check.py` could hang instead of reporting.** A
+  mutated build can reach a blocking read the real one cannot — deleting the
+  terminal check from `prompt_password` lets `getpass` open `/dev/tty` — and
+  with a terminal inherited from the harness it waited there until the 300s
+  timeout aborted the whole run. A mutation the suite catches in under two
+  seconds was reporting as a crash. The child now runs with stdin detached.
+
 ## 0.6.0 — 2026-08-14
 
 **It can be installed now.** `pyproject.toml` with a `hexact` console script, so
