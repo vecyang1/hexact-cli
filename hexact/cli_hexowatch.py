@@ -165,6 +165,23 @@ def cmd_monitors_full(args: argparse.Namespace) -> int:
             if tags:
                 print(f"      tags: {tags}")
 
+        # An empty page under a filter is the shape most likely to be a wrong
+        # answer rather than a true zero, because the filter vocabulary is the
+        # gateway's and nothing validates it locally. Measured: `--tool
+        # visualMonitoringTool` -- a name the CLI used to offer as a *choice* --
+        # matched none of the 16 monitors the gateway files under
+        # `sectionScreenTool`. Say where the real values are, at the moment the
+        # zero appears, rather than leaving the reader to conclude they have
+        # none.
+        applied = [name for name, value in (("--tool", args.tool),
+                                            ("--search", args.search),
+                                            ("--tag", args.tags)) if value]
+        if not shown and applied:
+            sys.stdout.flush()   # or the hint prints above the count
+            print(f"\n  Nothing matched {', '.join(applied)}. The gateway's own "
+                  f"names are not the creation names -- run `hexact watch list` "
+                  f"unfiltered and read the tool column.", file=sys.stderr)
+
     emit({"totalCount": total, "watchProperties": rows}, args.json, render)
     return EXIT_OK
 

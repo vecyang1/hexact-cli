@@ -166,10 +166,10 @@ MUTATIONS = [
         '    return json.loads(value)',
     ),
     (
-        "monitor filters are interpolated into the query document",
+        "a filter the caller set is silently dropped before the request",
         "hexact/graphql.py",
-        '            "searchQuery": search, "sortBy": sort_by, "sortDir": sort_dir,',
-        '            "searchQuery": None, "sortBy": sort_by, "sortDir": sort_dir,',
+        '        "searchQuery": search,',
+        '        "searchQuery": None,',
     ),
     (
         "an unreachable gateway is reported as schema drift",
@@ -263,6 +263,19 @@ MUTATIONS = [
         "        with urllib.request.urlopen(request, timeout=timeout,\n"
         "                                    context=ssl_context()) as response:",
         "        with urllib.request.urlopen(request, timeout=timeout) as response:",
+    ),
+    (
+        # Reverting to explicit nulls: no error, no null, a stated zero.
+        "unset monitor filters go back to being sent as explicit nulls",
+        "hexact/graphql.py",
+        "    variables.update({k: v for k, v in optional.items() if v is not None})",
+        "    variables.update(optional)",
+    ),
+    (
+        "a filter of False is dropped as if it had never been asked for",
+        "hexact/graphql.py",
+        "    variables.update({k: v for k, v in optional.items() if v is not None})",
+        "    variables.update({k: v for k, v in optional.items() if v})",
     ),
     (
         "doctor stops looking at the gateway credential half the commands need",

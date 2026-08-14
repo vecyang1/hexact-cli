@@ -2277,6 +2277,63 @@ class TestATrustStoreIsFoundWithoutEverWeakeningVerification(unittest.TestCase):
                           f"{name} opens a connection without the shared context")
 
 
+class TestAnOmittedFilterIsNotANullFilter(unittest.TestCase):
+    """Sending `null` for a filter the caller did not set costs 45 monitors.
+
+    Measured 2026-08-14 with a valid session, REST reporting 45 at the same
+    minute as a control::
+
+        page+limit only                totalCount=45  rows=45
+        page+limit plus null filters   totalCount=0   rows=0
+
+    The server reads present-and-null as a filter, and nothing matches it. This
+    is the worst shape this project knows: not an error, not a null, but a
+    stated `0` that `reject_all_null` cannot catch *because* it is a real zero.
+    `hexact watch list` reported an empty account for as long as it has existed.
+    """
+
+    def _variables_sent(self, **kwargs):
+        seen = {}
+
+        def capture(document, variables=None, **rest):
+            seen.update(variables or {})
+            return {"Watch": {"getUserWatchProperties":
+                              {"totalCount": 0, "watchProperties": []}}}
+
+        with mock.patch.object(graphql, "execute", side_effect=capture):
+            graphql.list_monitors("tok", **kwargs)
+        return seen
+
+    def test_unset_filters_are_absent_not_null(self):
+        sent = self._variables_sent()
+        self.assertEqual(set(sent), {"page", "limit"}, f"sent: {sorted(sent)}")
+        for name in ("active", "searchQuery", "sortBy", "sortDir", "tags", "tool"):
+            self.assertNotIn(name, sent)
+
+    def test_a_filter_the_caller_did_set_is_still_sent(self):
+        sent = self._variables_sent(tool="sectionScreenTool", search="meetup")
+        self.assertEqual(sent.get("tool"), "sectionScreenTool")
+        self.assertEqual(sent.get("searchQuery"), "meetup")
+
+    def test_active_false_survives_because_it_is_a_real_filter(self):
+        """`is not None`, not truthiness: `--paused` sends active=False and must
+        not be dropped as if it had never been asked for."""
+        self.assertIs(self._variables_sent(active=False).get("active"), False)
+
+    def test_the_tool_filter_takes_the_gateways_vocabulary_not_the_creation_one(self):
+        """`--tool visualMonitoringTool` was an offered *choice* that matched
+        none of the 16 monitors the gateway files as `sectionScreenTool`."""
+        parser = cli.build_parser()
+        args = parser.parse_args(["watch", "list", "--tool", "sectionScreenTool"])
+        self.assertEqual(args.tool, "sectionScreenTool")
+        # `watch create` keeps its validated list -- that one really is a fixed
+        # vocabulary, and a typo there creates the wrong kind of monitor.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["watch", "create", "--url", "https://x.test",
+                                   "--tool", "sectionScreenTool"])
+
+
 class TestDoctorDoesNotPassAfterCheckingNothing(unittest.TestCase):
     """The quickstart's own front door was a green light over an empty set.
 

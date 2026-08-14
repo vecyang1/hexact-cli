@@ -7,6 +7,37 @@ several of these releases exist because an earlier claim in this repository
 turned out to be wrong, and a changelog that hides that teaches the next reader
 to trust the wrong sentence.
 
+## 0.7.3 — 2026-08-14
+
+`hexact watch list` has reported an empty account for as long as it has
+existed, and this is the first release where anyone had a working session to
+notice.
+
+- **Fixed: an unset filter was sent as an explicit `null`, and the server reads
+  that as a filter.** With a valid session, REST reporting 45 monitors at the
+  same minute:
+
+  ```
+  page+limit only                totalCount=45  rows=45
+  page+limit plus null filters   totalCount=0   rows=0
+  ```
+
+  Not an error, not a null container, but a stated `0` — which is why
+  `reject_all_null` sails past it: the zero is real, the *question* was wrong.
+  `list_monitors` now sends only the filters the caller actually set.
+  `is not None`, not truthiness, so `--paused` (`active=False`) still filters.
+
+- **Fixed: `--tool` offered names the gateway does not use.** The choices came
+  from the REST *creation* vocabulary. On this account the 16 monitors the
+  dashboard calls visual come back as `sectionScreenTool`, and `automaticAITool`
+  was not in the list at all — so `--tool visualMonitoringTool` was an
+  *offered, validated choice* that matched nothing and reported a confident
+  zero. `watch list --tool` now takes a free-form name and lets the server
+  judge it; `watch create --tool` keeps its validated list, because there a
+  typo builds the wrong kind of monitor. When a filtered listing comes back
+  empty, the command now says where the real values are instead of leaving the
+  reader to conclude they have none.
+
 ## 0.7.2 — 2026-08-14
 
 **Fixed: on a Python with no CA certificates, every single request failed and

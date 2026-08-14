@@ -300,7 +300,19 @@ def build_parser() -> argparse.ArgumentParser:
              "(GraphQL; needs `auth login`)")
     full.add_argument("--tag", dest="tags", action="append", default=[],
                       type=int, metavar="ID", help="repeatable")
-    full.add_argument("--tool", choices=hexowatch.TOOLS)
+    # No `choices=hexowatch.TOOLS` here, deliberately. Those are the names the
+    # REST *creation* endpoint accepts; the gateway reports a different
+    # vocabulary for the same monitors. Measured 2026-08-14 on this account:
+    # the 16 monitors the dashboard calls visual come back as
+    # `sectionScreenTool`, and `automaticAITool` is not in TOOLS at all -- so
+    # `--tool visualMonitoringTool` was a valid choice that matched nothing and
+    # reported a confident zero. A server-side filter should take the server's
+    # vocabulary and let the server judge it.
+    full.add_argument(
+        "--tool", metavar="NAME",
+        help="filter by the gateway's tool name, which differs from the "
+             "creation names -- run `hexact watch list` and read the tool "
+             "column for the values this account actually uses")
     full.add_argument("--search", metavar="TEXT")
     full.add_argument("--page", type=int, default=1)
     full.add_argument("--limit", type=int, default=50)

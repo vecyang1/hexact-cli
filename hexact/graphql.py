@@ -679,16 +679,34 @@ def list_monitors(
     tool: str | None = None, sort_by: str | None = None,
     sort_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Monitors with their real configuration, filtered and paged server-side."""
-    data = execute(
-        USER_PROPERTIES_QUERY,
-        {
-            "page": int(page), "limit": int(limit), "active": active,
-            "searchQuery": search, "sortBy": sort_by, "sortDir": sort_dir,
-            "tags": [int(t) for t in tags] if tags else None, "tool": tool,
-        },
-        token=token,
-    )
+    """Monitors with their real configuration, filtered and paged server-side.
+
+    **An omitted variable and an explicit ``null`` are not the same thing here,
+    and the difference is 45 monitors.** Measured 2026-08-14 with a valid
+    session, against REST reporting 45 at the same moment::
+
+        page+limit only                      totalCount=45  rows=45
+        page+limit plus null filters         totalCount=0   rows=0
+
+    The server treats a filter that is present-and-null as a filter, and
+    nothing matches it. No error, no warning -- a stated, confident zero, which
+    `reject_all_null` cannot catch precisely because it is not a null. So build
+    the variables from what the caller actually asked for.
+
+    `is not None` rather than truthiness: `active=False` is a real filter and
+    must survive, while `active=None` means "did not ask".
+    """
+    variables: dict[str, Any] = {"page": int(page), "limit": int(limit)}
+    optional = {
+        "active": active,
+        "searchQuery": search,
+        "sortBy": sort_by,
+        "sortDir": sort_dir,
+        "tags": [int(t) for t in tags] if tags else None,
+        "tool": tool,
+    }
+    variables.update({k: v for k, v in optional.items() if v is not None})
+    data = execute(USER_PROPERTIES_QUERY, variables, token=token)
     return reject_all_null(
         unwrap(data, "Watch", "getUserWatchProperties"),
         ("totalCount", "watchProperties"),
