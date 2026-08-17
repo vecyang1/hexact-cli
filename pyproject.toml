@@ -7,7 +7,7 @@ name = "hexact-cli"
 description = "An agentic command-line client for the Hexact suite -- Hexowatch, Hexomatic, Hexometer and Hexospark."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "vecyang1" }]
 keywords = [
